@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据分析聊天助手</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #007bff;
+            --secondary-color: #6c757d;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #ffc107;
+            --info-color: #17a2b8;
+            --light-color: #f8f9fa;
+            --dark-color: #343a40;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f5f5f5;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .chat-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        .sidebar {
+            width: 300px;
+            background-color: white;
+            border-right: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .chat-header {
+            background-color: white;
+            padding: 15px 20px;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        }
+        
+        .message.user .message-content {
+            background-color: var(--primary-color);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message.assistant .message-content {
+            background-color: white;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .message-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            margin: 0 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        
+        .message.user .message-avatar {
+            background-color: var(--primary-color);
+            color: white;
+            order: 1;
+        }
+        
+        .message.assistant .message-avatar {
+            background-color: #f0f0f0;
+            color: #666;
+        }
+        
+        .input-area {
+            background-color: white;
+            border-top: 1px solid #dee2e6;
+            padding: 20px;
+        }
+        
+        .input-group-custom {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+        }
+        
+        .message-input {
+            flex: 1;
+            border: 1px solid #dee2e6;
+            border-radius: 24px;
+            padding: 10px 20px;
+            resize: none;
+            outline: none;
+            font-size: 14px;
+            line-height: 1.5;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        
+        .message-input:focus {
+            border-color: var(--primary-color);
+        }
+        
+        .send-button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .send-button:hover {
+            background-color: #0056b3;
+        }
+        
+        .send-button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .upload-area {
+            border: 2px dashed #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s;
+            margin-bottom: 20px;
+        }
+        
+        .upload-area:hover {
+            border-color: var(--primary-color);
+        }
+        
+        .upload-area.dragover {
+            border-color: var(--primary-color);
+            background-color: #e7f3ff;
+        }
+        
+        .provider-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .provider-button {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            background-color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 12px;
+        }
+        
+        .provider-button.active {
+            background-color: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+        
+        .provider-button:hover:not(.active) {
+            background-color: #f8f9fa;
+        }
+        
+        .dataset-item {
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .dataset-item:hover {
+            background-color: #e9ecef;
+        }
+        
+        .dataset-item.active {
+            background-color: #e7f3ff;
+            border: 1px solid var(--primary-color);
+        }
+        
+        .tool-result {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border-left: 3px solid var(--info-color);
+        }
+        
+        .visualization {
+            max-width: 100%;
+            margin-top: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 10px;
+        }
+        
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #999;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        
+        @keyframes typing {
+            0%, 60%, 100% {
+                opacity: 0.3;
+                transform: scale(0.8);
+            }
+            30% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+        
+        .error-message {
+            color: var(--danger-color);
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-line"></i> 数据分析助手
+                </h5>
+            </div>
+            
+            <div class="sidebar-content">
+                <!-- Provider Selection -->
+                <div class="mb-4">
+                    <h6 class="text-muted mb-2">AI 模型选择</h6>
+                    <div class="provider-selector" id="providerSelector">
+                        <!-- Will be populated dynamically -->
+                    </div>
+                </div>
+                
+                <!-- File Upload -->
+                <div class="mb-4">
+                    <h6 class="text-muted mb-2">上传数据文件</h6>
+                    <div class="upload-area" id="uploadArea">
+                        <i class="fas fa-cloud-upload-alt fa-2x text-muted"></i>
+                        <p class="mb-0 mt-2">点击或拖拽文件到此处</p>
+                        <small class="text-muted">支持 CSV, Excel 格式</small>
+                        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display: none;">
+                    </div>
+                </div>
+                
+                <!-- Datasets -->
+                <div class="mb-4">
+                    <h6 class="text-muted mb-2">已加载数据集</h6>
+                    <div id="datasetsList">
+                        <p class="text-muted small">尚未加载数据集</p>
+                    </div>
+                </div>
+                
+                <!-- Quick Actions -->
+                <div>
+                    <h6 class="text-muted mb-2">快速操作</h6>
+                    <button class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="exportChat()">
+                        <i class="fas fa-download"></i> 导出对话记录
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary w-100" onclick="clearChat()">
+                        <i class="fas fa-trash"></i> 清空对话
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Chat Header -->
+            <div class="chat-header">
+                <div>
+                    <h6 class="mb-0">数据分析对话</h6>
+                    <small class="text-muted" id="sessionInfo">会话 ID: -</small>
+                </div>
+                <div>
+                    <span class="badge bg-success" id="connectionStatus">
+                        <i class="fas fa-circle"></i> 已连接
+                    </span>
+                </div>
+            </div>
+            
+            <!-- Messages Container -->
+            <div class="messages-container" id="messagesContainer">
+                <div class="message assistant">
+                    <div class="message-avatar">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div class="message-content">
+                        <p>您好！我是您的数据分析助手。</p>
+                        <p>我可以帮助您：</p>
+                        <ul>
+                            <li>📊 分析CSV和Excel数据文件</li>
+                            <li>📈 创建各种数据可视化图表</li>
+                            <li>🔍 进行统计分析和数据探索</li>
+                            <li>💡 回答关于数据的问题</li>
+                        </ul>
+                        <p>请上传数据文件开始分析，或直接向我提问！</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-group-custom">
+                    <textarea 
+                        class="message-input" 
+                        id="messageInput" 
+                        placeholder="输入消息... (Shift+Enter 换行)"
+                        rows="1"
+                    ></textarea>
+                    <button class="send-button" id="sendButton" onclick="sendMessage()">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script>
+        let sessionId = null;
+        let currentProvider = 'openai';
+        let availableProviders = [];
+        let isProcessing = false;
+        
+        // Initialize session
+        async function initSession() {
+            try {
+                const response = await fetch('/api/session', { method: 'POST' });
+                const data = await response.json();
+                sessionId = data.session_id;
+                availableProviders = data.available_providers;
+                currentProvider = data.default_provider;
+                
+                document.getElementById('sessionInfo').textContent = `会话 ID: ${sessionId.substring(0, 8)}...`;
+                
+                // Setup providers
+                setupProviders();
+                
+            } catch (error) {
+                console.error('Failed to initialize session:', error);
+                showError('初始化失败，请刷新页面重试');
+            }
+        }
+        
+        // Setup provider buttons
+        function setupProviders() {
+            const selector = document.getElementById('providerSelector');
+            selector.innerHTML = '';
+            
+            const providerNames = {
+                'openai': 'ChatGPT',
+                'anthropic': 'Claude',
+                'deepseek': 'DeepSeek'
+            };
+            
+            availableProviders.forEach(provider => {
+                const button = document.createElement('button');
+                button.className = `provider-button ${provider === currentProvider ? 'active' : ''}`;
+                button.textContent = providerNames[provider] || provider;
+                button.onclick = () => switchProvider(provider);
+                selector.appendChild(button);
+            });
+        }
+        
+        // Switch provider
+        async function switchProvider(provider) {
+            if (provider === currentProvider) return;
+            
+            try {
+                const response = await fetch('/api/provider/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, provider })
+                });
+                
+                if (response.ok) {
+                    currentProvider = provider;
+                    setupProviders();
+                    addSystemMessage(`已切换到 ${provider.toUpperCase()} 模型`);
+                }
+            } catch (error) {
+                showError('切换模型失败');
+            }
+        }
+        
+        // File upload handling
+        function setupFileUpload() {
+            const uploadArea = document.getElementById('uploadArea');
+            const fileInput = document.getElementById('fileInput');
+            
+            if (!uploadArea || !fileInput) {
+                console.error('Upload elements not found');
+                return;
+            }
+            
+            uploadArea.addEventListener('click', () => fileInput.click());
+            
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    handleFileUpload(files[0]);
+                }
+            });
+            
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleFileUpload(e.target.files[0]);
+                }
+            });
+        }
+        
+        // Setup message input handling
+        function setupMessageInput() {
+            const messageInput = document.getElementById('messageInput');
+            
+            if (!messageInput) {
+                console.error('Message input not found');
+                return;
+            }
+            
+            messageInput.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = this.scrollHeight + 'px';
+                updateSendButton();
+            });
+            
+            messageInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+        }
+        
+        // Handle file upload
+        async function handleFileUpload(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('session_id', sessionId);
+            
+            addUserMessage(`上传文件: ${file.name}`);
+            showTypingIndicator();
+            
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                hideTypingIndicator();
+                
+                if (result.success && result.result) {
+                    if (result.result.error) {
+                        addAssistantMessage(`上传失败: ${result.result.error}`);
+                    } else {
+                        updateDatasetsList(result.result);
+                        addAssistantMessage(`文件 "${result.result.dataset_name}" 上传成功！\n\n数据集信息：\n- 行数: ${result.result.shape[0]}\n- 列数: ${result.result.shape[1]}\n- 内存占用: ${result.result.memory_usage.toFixed(2)} MB\n\n您可以开始询问关于这个数据集的问题了。`);
+                    }
+                } else {
+                    addAssistantMessage('文件上传失败，请重试。');
+                }
+                
+            } catch (error) {
+                hideTypingIndicator();
+                addAssistantMessage(`上传出错: ${error.message}`);
+            }
+        }
+        
+        // Update datasets list
+        function updateDatasetsList(datasetInfo) {
+            const container = document.getElementById('datasetsList');
+            
+            // Create dataset item if it doesn't exist
+            let item = document.querySelector(`[data-dataset="${datasetInfo.dataset_name}"]`);
+            if (!item) {
+                item = document.createElement('div');
+                item.className = 'dataset-item active';
+                item.dataset.dataset = datasetInfo.dataset_name;
+                container.appendChild(item);
+            }
+            
+            item.innerHTML = `
+                <strong>${datasetInfo.dataset_name}</strong><br>
+                <small class="text-muted">
+                    ${datasetInfo.shape[0]} 行 × ${datasetInfo.shape[1]} 列
+                </small>
+            `;
+            
+            // Remove empty message
+            const emptyMsg = container.querySelector('.text-muted.small');
+            if (emptyMsg) emptyMsg.remove();
+        }
+        
+        // Send message
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || isProcessing) return;
+            
+            isProcessing = true;
+            input.value = '';
+            input.style.height = 'auto';
+            updateSendButton();
+            
+            addUserMessage(message);
+            showTypingIndicator();
+            
+            try {
+                const response = await fetch('/api/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        message: message,
+                        provider: currentProvider
+                    })
+                });
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let assistantMessage = '';
+                let messageElement = null;
+                
+                hideTypingIndicator();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.type === 'content') {
+                                    assistantMessage += data.content;
+                                    if (!messageElement) {
+                                        messageElement = addAssistantMessage(assistantMessage, true);
+                                    } else {
+                                        updateMessage(messageElement, assistantMessage);
+                                    }
+                                } else if (data.type === 'tool_result') {
+                                    displayToolResult(data.result);
+                                } else if (data.type === 'error') {
+                                    addAssistantMessage(`错误: ${data.error}`);
+                                }
+                            } catch (e) {
+                                console.error('Error parsing SSE data:', e);
+                            }
+                        }
+                    }
+                }
+                
+            } catch (error) {
+                hideTypingIndicator();
+                addAssistantMessage(`发生错误: ${error.message}`);
+            } finally {
+                isProcessing = false;
+                updateSendButton();
+            }
+        }
+        
+        // Display tool results
+        function displayToolResult(result) {
+            const container = document.getElementById('messagesContainer');
+            const lastMessage = container.lastElementChild;
+            
+            if (result.result && result.result.image) {
+                // Display image visualization
+                const img = document.createElement('img');
+                img.src = result.result.image;
+                img.className = 'visualization';
+                lastMessage.querySelector('.message-content').appendChild(img);
+            } else if (result.result && result.result.plot_json) {
+                // Display Plotly visualization
+                const plotDiv = document.createElement('div');
+                plotDiv.className = 'visualization';
+                lastMessage.querySelector('.message-content').appendChild(plotDiv);
+                
+                const plotData = JSON.parse(result.result.plot_json);
+                Plotly.newPlot(plotDiv, plotData.data, plotData.layout);
+            } else {
+                // Display other results
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'tool-result';
+                resultDiv.innerHTML = `<strong>工具: ${result.tool}</strong><br>` +
+                    `<pre>${JSON.stringify(result.result, null, 2)}</pre>`;
+                lastMessage.querySelector('.message-content').appendChild(resultDiv);
+            }
+        }
+        
+        // Message handling functions
+        function addUserMessage(content) {
+            const container = document.getElementById('messagesContainer');
+            const message = document.createElement('div');
+            message.className = 'message user';
+            message.innerHTML = `
+                <div class="message-content">
+                    ${marked.parse(content)}
+                </div>
+                <div class="message-avatar">
+                    <i class="fas fa-user"></i>
+                </div>
+            `;
+            container.appendChild(message);
+            scrollToBottom();
+        }
+        
+        function addAssistantMessage(content, isStreaming = false) {
+            const container = document.getElementById('messagesContainer');
+            const message = document.createElement('div');
+            message.className = 'message assistant';
+            message.innerHTML = `
+                <div class="message-avatar">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <div class="message-content">
+                    ${marked.parse(content)}
+                </div>
+            `;
+            container.appendChild(message);
+            scrollToBottom();
+            
+            if (isStreaming) {
+                return message;
+            }
+        }
+        
+        function updateMessage(messageElement, content) {
+            const contentDiv = messageElement.querySelector('.message-content');
+            contentDiv.innerHTML = marked.parse(content);
+            scrollToBottom();
+        }
+        
+        function addSystemMessage(content) {
+            const container = document.getElementById('messagesContainer');
+            const message = document.createElement('div');
+            message.className = 'text-center text-muted small my-3';
+            message.textContent = content;
+            container.appendChild(message);
+            scrollToBottom();
+        }
+        
+        function showTypingIndicator() {
+            const container = document.getElementById('messagesContainer');
+            const indicator = document.createElement('div');
+            indicator.className = 'message assistant typing-indicator-message';
+            indicator.innerHTML = `
+                <div class="message-avatar">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <div class="message-content">
+                    <div class="typing-indicator">
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(indicator);
+            scrollToBottom();
+        }
+        
+        function hideTypingIndicator() {
+            const indicator = document.querySelector('.typing-indicator-message');
+            if (indicator) indicator.remove();
+        }
+        
+        function scrollToBottom() {
+            const container = document.getElementById('messagesContainer');
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function showError(message) {
+            const container = document.getElementById('messagesContainer');
+            const error = document.createElement('div');
+            error.className = 'alert alert-danger';
+            error.textContent = message;
+            container.appendChild(error);
+            scrollToBottom();
+        }
+        
+        // Input handling
+        function updateSendButton() {
+            const sendButton = document.getElementById('sendButton');
+            const messageInput = document.getElementById('messageInput');
+            
+            if (!sendButton || !messageInput) return;
+            
+            const hasContent = messageInput.value.trim().length > 0;
+            sendButton.disabled = !hasContent || isProcessing;
+        }
+        
+        // Export chat
+        async function exportChat() {
+            try {
+                const response = await fetch(`/api/history/${sessionId}`);
+                const data = await response.json();
+                
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `chat_history_${new Date().toISOString()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                showError('导出失败: ' + error.message);
+            }
+        }
+        
+        // Clear chat
+        function clearChat() {
+            if (confirm('确定要清空所有对话记录吗？')) {
+                const container = document.getElementById('messagesContainer');
+                container.innerHTML = '';
+                addAssistantMessage('对话已清空。请问有什么可以帮助您的？');
+            }
+        }
+        
+        // Initialize on load
+        window.addEventListener('load', () => {
+            initSession();
+            updateSendButton();
+            
+            // Configure marked options
+            marked.setOptions({
+                breaks: true,
+                gfm: true
+            });
+            
+            // Setup file upload and message input handling
+            setupFileUpload();
+            setupMessageInput();
+        });
+    </script>
+</body>
+</html>
