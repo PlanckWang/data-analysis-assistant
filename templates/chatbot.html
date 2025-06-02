@@ -437,13 +437,18 @@
         // Initialize session
         async function initSession() {
             try {
-                const response = await fetch('/api/session', { method: 'POST' });
-                const data = await response.json();
-                sessionId = data.session_id;
-                availableProviders = data.available_providers;
-                currentProvider = data.default_provider;
+                const response = await fetch('/api/v1/session', { method: 'POST' });
+                const parsedResponse = await response.json();
+                if (parsedResponse.status === 'success' && parsedResponse.data) {
+                    sessionId = parsedResponse.data.session_id;
+                    availableProviders = parsedResponse.data.available_providers;
+                    currentProvider = parsedResponse.data.default_provider;
+                    document.getElementById('sessionInfo').textContent = `会话 ID: ${sessionId.substring(0, 8)}...`;
+                } else {
+                    throw new Error(parsedResponse.message || 'Failed to initialize session data.');
+                }
                 
-                document.getElementById('sessionInfo').textContent = `会话 ID: ${sessionId.substring(0, 8)}...`;
+                // Setup providers
                 
                 // Setup providers
                 setupProviders();
@@ -479,19 +484,22 @@
             if (provider === currentProvider) return;
             
             try {
-                const response = await fetch('/api/provider/switch', {
+                const response = await fetch('/api/v1/provider/switch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ session_id: sessionId, provider })
                 });
-                
-                if (response.ok) {
-                    currentProvider = provider;
-                    setupProviders();
-                    addSystemMessage(`已切换到 ${provider.toUpperCase()} 模型`);
+                const parsedResponse = await response.json();
+
+                if (response.ok && parsedResponse.status === 'success') {
+                    currentProvider = parsedResponse.data.provider;
+                    setupProviders(); // Re-render buttons with new active provider
+                    addSystemMessage(`已切换到 ${currentProvider.toUpperCase()} 模型`);
+                } else {
+                    showError(parsedResponse.detail || '切换模型失败');
                 }
             } catch (error) {
-                showError('切换模型失败');
+                showError('切换模型失败: ' + error.message);
             }
         }
         
@@ -566,29 +574,29 @@
             showTypingIndicator();
             
             try {
-                const response = await fetch('/api/upload', {
+                const response = await fetch('/api/v1/upload', {
                     method: 'POST',
                     body: formData
                 });
                 
-                const result = await response.json();
-                
+                const parsedResponse = await response.json();
                 hideTypingIndicator();
                 
-                if (result.success && result.result) {
-                    if (result.result.error) {
-                        addAssistantMessage(`上传失败: ${result.result.error}`);
+                if (response.ok && parsedResponse.status === 'success' && parsedResponse.data && parsedResponse.data.result) {
+                    const uploadData = parsedResponse.data.result;
+                    if (uploadData.error) {
+                        addAssistantMessage(`上传失败: ${uploadData.error}`);
                     } else {
-                        updateDatasetsList(result.result);
-                        addAssistantMessage(`文件 "${result.result.dataset_name}" 上传成功！\n\n数据集信息：\n- 行数: ${result.result.shape[0]}\n- 列数: ${result.result.shape[1]}\n- 内存占用: ${result.result.memory_usage.toFixed(2)} MB\n\n您可以开始询问关于这个数据集的问题了。`);
+                        updateDatasetsList(uploadData);
+                        addAssistantMessage(`文件 "${uploadData.dataset_name}" 上传成功！\n\n数据集信息：\n- 行数: ${uploadData.shape[0]}\n- 列数: ${uploadData.shape[1]}\n- 内存占用: ${uploadData.memory_usage.toFixed(2)} MB\n\n您可以开始询问关于这个数据集的问题了。`);
                     }
                 } else {
-                    addAssistantMessage('文件上传失败，请重试。');
+                     addAssistantMessage(`文件上传失败: ${parsedResponse.detail || response.statusText || '未知错误'}`);
                 }
                 
             } catch (error) {
                 hideTypingIndicator();
-                addAssistantMessage(`上传出错: ${error.message}`);
+                addAssistantMessage(`上传出错: ${error.message || '网络错误'}`);
             }
         }
         
@@ -633,7 +641,7 @@
             showTypingIndicator();
             
             try {
-                const response = await fetch('/api/chat/stream', {
+                const response = await fetch('/api/v1/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -824,12 +832,22 @@
         // Export chat
         async function exportChat() {
             try {
-                const response = await fetch(`/api/history/${sessionId}`);
-                const data = await response.json();
-                
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
+                const response = await fetch(`/api/v1/history/${sessionId}`);
+                const parsedResponse = await response.json();
+
+                if (response.ok && parsedResponse.status === 'success' && parsedResponse.data) {
+                    const blob = new Blob([JSON.stringify(parsedResponse.data, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `chat_history_${new Date().toISOString()}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                } else {
+                    showError(parsedResponse.detail || '导出失败');
+                }
+            } catch (error) {
+                showError('导出失败: ' + error.message);
                 a.href = url;
                 a.download = `chat_history_${new Date().toISOString()}.json`;
                 a.click();

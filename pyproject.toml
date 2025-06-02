@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
-    "mcp",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
@@ -27,6 +26,10 @@ dependencies = [
     "aiofiles>=23.0.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.24.0",
+    "python-jose[cryptography]~=3.3",
+    "redis~=5.0",
+    "pydantic-settings~=2.0",
+    "structlog~=23.0",
 ]
 
 [project.optional-dependencies]
