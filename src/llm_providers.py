@@ -310,7 +310,6 @@ class AnthropicProvider(LLMProvider):
 
 
 class DeepSeekProvider(LLMProvider):
-class DeepSeekProvider(LLMProvider):
     """DeepSeek provider"""
     
     def __init__(self):

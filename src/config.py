@@ -6,6 +6,7 @@ environment variables and .env files. It includes settings for paths,
 file uploads, LLM providers, MCP server, general server settings, and Redis.
 It also includes a validator to create necessary directories on startup.
 """
+import sys
 from pathlib import Path
 from typing import Set, List as PyList # Renamed List to PyList to avoid conflict if any
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,7 +41,7 @@ class Settings(BaseSettings):
 
     # LLM and MCP settings
     DEFAULT_LLM_PROVIDER: str = Field(default="openai", description="Default LLM provider to use (e.g., 'openai', 'anthropic').")
-    MCP_SERVER_COMMAND: str = Field(default="python -m src.server", description="Command to start the MCP server.")
+    MCP_SERVER_COMMAND: str = Field(default=f"{sys.executable} -m src.server", description="Command to start the MCP server.")
     SYSTEM_PROMPT: str = Field(
         default="""你是一个专业的数据分析助手。你可以帮助用户：
 1. 上传和管理CSV、Excel数据文件
