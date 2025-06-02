@@ -97,10 +97,11 @@ class DataSession:
         })
 
 # Global session instance - For single-user context as per current design.
-session: DataSession = DataSession()
+# session: DataSession = DataSession() # Removed global session
+user_sessions: Dict[str, DataSession] = {} # New dictionary for user-specific sessions
 
 @mcp.tool()
-async def upload_file(file_path: str, file_name: Optional[str] = None) -> Dict[str, Any]:
+async def upload_file(session_id: str, file_path: str, file_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Upload a CSV or Excel file for analysis. The file should already be present on the server's filesystem
     at the location specified by `file_path`.
@@ -115,17 +116,21 @@ async def upload_file(file_path: str, file_name: Optional[str] = None) -> Dict[s
                         including its name, shape, columns, data types, and memory usage.
                         Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     try:
         file_path_obj: Path = Path(file_path) # Create Path object for easier manipulation
         
         if not file_path_obj.exists():
-            logger.warn("upload_file_not_found", file_path=str(file_path_obj))
-            return {"error": f"File not found: {str(file_path_obj)}"} # Ensure path is string for f-string
+            logger.warn("upload_file_not_found", file_path=str(file_path_obj), session_id=session_id)
+            return {"error": f"文件未找到: {str(file_path_obj)}"}
         
         file_suffix: str = file_path_obj.suffix.lower()
         if file_suffix not in settings.ALLOWED_EXTENSIONS:
-            logger.warn("upload_file_type_not_allowed", file_path=str(file_path_obj), suffix=file_suffix, allowed_extensions=settings.ALLOWED_EXTENSIONS)
-            return {"error": f"Unsupported file type '{file_suffix}'. Allowed: {settings.ALLOWED_EXTENSIONS}"}
+            logger.warn("upload_file_type_not_allowed", file_path=str(file_path_obj), suffix=file_suffix, allowed_extensions=settings.ALLOWED_EXTENSIONS, session_id=session_id)
+            return {"error": f"不支持的文件类型 '{file_suffix}'. 允许的类型: {settings.ALLOWED_EXTENSIONS}"}
         
         # Read the file
         df: pd.DataFrame
@@ -148,15 +153,15 @@ async def upload_file(file_path: str, file_name: Optional[str] = None) -> Dict[s
             "memory_usage_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),  # MB
         }
         
-        logger.info("file_uploaded_successfully", dataset_name=dataset_name, file_path=str(file_path_obj), resulting_shape=df.shape)
+        logger.info("file_uploaded_successfully", dataset_name=dataset_name, file_path=str(file_path_obj), resulting_shape=df.shape, session_id=session_id)
         return info
         
     except Exception as e:
-        logger.error("file_upload_tool_error", provided_file_path=file_path, provided_file_name=file_name, error=str(e), exc_info=True)
+        logger.error("file_upload_tool_error", provided_file_path=file_path, provided_file_name=file_name, error=str(e), exc_info=True, session_id=session_id)
         return {"error": str(e)}
 
 @mcp.tool()
-async def data_overview() -> Dict[str, Any]:
+async def data_overview(session_id: str) -> Dict[str, Any]:
     """
     Get an overview of the current dataset.
     
@@ -169,10 +174,14 @@ async def data_overview() -> Dict[str, Any]:
         Dict[str, Any]: A dictionary containing the dataset overview.
                         Returns `{"error": "message"}` if no dataset is loaded or an error occurs.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     if df is None:
-        logger.warn("data_overview_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("data_overview_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
     
     current_dataset_name: Optional[str] = session.current_df
     try:
@@ -197,15 +206,15 @@ async def data_overview() -> Dict[str, Any]:
         }
         
         session.add_to_history("data_overview", {"dataset_name": current_dataset_name, "shape": overview["shape"]}) # Log summary
-        logger.info("data_overview_success", dataset_name=current_dataset_name)
+        logger.info("data_overview_success", dataset_name=current_dataset_name, session_id=session_id)
         return overview
         
     except Exception as e:
-        logger.error("data_overview_tool_error", dataset_name=current_dataset_name, error=str(e), exc_info=True)
+        logger.error("data_overview_tool_error", dataset_name=current_dataset_name, error=str(e), exc_info=True, session_id=session_id)
         return {"error": str(e)}
 
 @mcp.tool()
-async def descriptive_statistics(columns: Optional[List[str]] = None) -> Dict[str, Any]:
+async def descriptive_statistics(session_id: str, columns: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Calculate descriptive statistics for specified numeric columns, or all numeric columns if none are specified.
     
@@ -220,10 +229,14 @@ async def descriptive_statistics(columns: Optional[List[str]] = None) -> Dict[st
         Dict[str, Any]: A dictionary containing descriptive statistics.
                         Returns `{"error": "message"}` if no suitable data or an error occurs.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     if df is None:
-        logger.warn("descriptive_statistics_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("descriptive_statistics_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     current_dataset_name: Optional[str] = session.current_df
     analysis_df: pd.DataFrame
@@ -231,21 +244,21 @@ async def descriptive_statistics(columns: Optional[List[str]] = None) -> Dict[st
     try:
         numeric_df: pd.DataFrame = df.select_dtypes(include=[np.number])
         if numeric_df.empty:
-            logger.warn("descriptive_statistics_no_numeric_columns", dataset_name=current_dataset_name)
-            return {"error": "No numeric columns found in the dataset."}
+            logger.warn("descriptive_statistics_no_numeric_columns", dataset_name=current_dataset_name, session_id=session_id)
+            return {"error": "数据集中未找到数值列。"}
 
         if columns:
             valid_cols: List[str] = [col for col in columns if col in numeric_df.columns]
             if not valid_cols:
-                logger.warn("descriptive_statistics_no_valid_specified_columns", dataset_name=current_dataset_name, requested_columns=columns)
-                return {"error": "No valid numeric columns specified, or specified columns are not numeric."}
+                logger.warn("descriptive_statistics_no_valid_specified_columns", dataset_name=current_dataset_name, requested_columns=columns, session_id=session_id)
+                return {"error": "未指定有效的数值列，或指定的列不是数值列。"}
             analysis_df = numeric_df[valid_cols]
         else:
             analysis_df = numeric_df # Use all numeric columns
         
         if analysis_df.empty: # Should be caught by numeric_df.empty, but as a safeguard
-             logger.warn("descriptive_statistics_empty_analysis_df", dataset_name=current_dataset_name)
-             return {"error": "No data to analyze after column selection."}
+             logger.warn("descriptive_statistics_empty_analysis_df", dataset_name=current_dataset_name, session_id=session_id)
+             return {"error": "列选择后没有可供分析的数据。"}
 
         desc_stats: pd.DataFrame = analysis_df.describe()
         
@@ -273,15 +286,16 @@ async def descriptive_statistics(columns: Optional[List[str]] = None) -> Dict[st
         }
 
         session.add_to_history("descriptive_statistics", {"columns_analyzed": list(analysis_df.columns)})
-        logger.info("descriptive_statistics_success", dataset_name=current_dataset_name, columns_analyzed=list(analysis_df.columns))
+        logger.info("descriptive_statistics_success", dataset_name=current_dataset_name, columns_analyzed=list(analysis_df.columns), session_id=session_id)
         return stats_result
         
     except Exception as e:
-        logger.error("descriptive_statistics_tool_error", dataset_name=current_dataset_name, requested_columns=columns, error=str(e), exc_info=True)
+        logger.error("descriptive_statistics_tool_error", dataset_name=current_dataset_name, requested_columns=columns, error=str(e), exc_info=True, session_id=session_id)
         return {"error": str(e)}
 
 @mcp.tool()
 async def correlation_analysis(
+    session_id: str,
     columns: Optional[List[str]] = None,
     method: str = "pearson"
 ) -> Dict[str, Any]:
@@ -300,10 +314,14 @@ async def correlation_analysis(
         Dict[str, Any]: Contains the correlation matrix, method used, significant correlations,
                         and columns analyzed. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     if df is None:
-        logger.warn("correlation_analysis_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("correlation_analysis_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     current_dataset_name: Optional[str] = session.current_df
     analysis_df: pd.DataFrame
@@ -311,21 +329,21 @@ async def correlation_analysis(
     try:
         numeric_df: pd.DataFrame = df.select_dtypes(include=[np.number])
         if numeric_df.empty:
-            logger.warn("correlation_analysis_no_numeric_columns", dataset_name=current_dataset_name)
-            return {"error": "No numeric columns found in the dataset."}
+            logger.warn("correlation_analysis_no_numeric_columns", dataset_name=current_dataset_name, session_id=session_id)
+            return {"error": "数据集中未找到数值列。"}
 
         if columns:
             valid_cols: List[str] = [col for col in columns if col in numeric_df.columns]
             if not valid_cols:
-                logger.warn("correlation_analysis_no_valid_specified_columns", dataset_name=current_dataset_name, requested_columns=columns)
-                return {"error": "No valid numeric columns specified, or specified columns are not numeric."}
+                logger.warn("correlation_analysis_no_valid_specified_columns", dataset_name=current_dataset_name, requested_columns=columns, session_id=session_id)
+                return {"error": "未指定有效的数值列，或指定的列不是数值列。"}
             analysis_df = numeric_df[valid_cols]
         else:
             analysis_df = numeric_df
         
         if analysis_df.empty or len(analysis_df.columns) < 2:
-            logger.warn("correlation_analysis_not_enough_columns", dataset_name=current_dataset_name, num_columns=len(analysis_df.columns))
-            return {"error": "Need at least 2 numeric columns for correlation analysis."}
+            logger.warn("correlation_analysis_not_enough_columns", dataset_name=current_dataset_name, num_columns=len(analysis_df.columns), session_id=session_id)
+            return {"error": "相关性分析至少需要两个数值列。"}
         
         corr_matrix: pd.DataFrame = analysis_df.corr(method=method)
         
@@ -354,15 +372,15 @@ async def correlation_analysis(
         }
         
         session.add_to_history("correlation_analysis", {"method": method, "columns_analyzed": list(analysis_df.columns)})
-        logger.info("correlation_analysis_success", dataset_name=current_dataset_name, method=method, columns_analyzed=list(analysis_df.columns))
+        logger.info("correlation_analysis_success", dataset_name=current_dataset_name, method=method, columns_analyzed=list(analysis_df.columns), session_id=session_id)
         return result
         
     except Exception as e:
-        logger.error("correlation_analysis_tool_error", dataset_name=current_dataset_name, requested_columns=columns, method=method, error=str(e), exc_info=True)
+        logger.error("correlation_analysis_tool_error", dataset_name=current_dataset_name, requested_columns=columns, method=method, error=str(e), exc_info=True, session_id=session_id)
         return {"error": str(e)}
 
 @mcp.tool()
-async def list_datasets() -> Dict[str, Any]:
+async def list_datasets(session_id: str) -> Dict[str, Any]:
     """
     List all currently loaded datasets in the session.
 
@@ -371,6 +389,10 @@ async def list_datasets() -> Dict[str, Any]:
                         (name, shape, column count, if it's the current one),
                         the name of the current dataset, and the total count.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     datasets_info: List[Dict[str, Any]] = []
     for name, df_item in session.dataframes.items(): # df_item is used to avoid conflict with outer df
         datasets_info.append({
@@ -380,7 +402,7 @@ async def list_datasets() -> Dict[str, Any]:
             "is_current": name == session.current_df
         })
     
-    logger.info("list_datasets_success", count=len(datasets_info), current_dataset=session.current_df)
+    logger.info("list_datasets_success", count=len(datasets_info), current_dataset=session.current_df, session_id=session_id)
     return {
         "datasets": datasets_info,
         "current_dataset": session.current_df,
@@ -388,7 +410,7 @@ async def list_datasets() -> Dict[str, Any]:
     }
 
 @mcp.tool()
-async def switch_dataset(dataset_name: str) -> Dict[str, Any]:
+async def switch_dataset(session_id: str, dataset_name: str) -> Dict[str, Any]:
     """
     Switch the currently active dataset in the session.
 
@@ -400,13 +422,17 @@ async def switch_dataset(dataset_name: str) -> Dict[str, Any]:
         Dict[str, Any]: Confirmation of the switch, including the new current dataset's name and shape.
                         Returns `{"error": "message"}` if the dataset is not found.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     if dataset_name not in session.dataframes:
-        logger.warn("switch_dataset_not_found", requested_dataset=dataset_name, available_datasets=list(session.dataframes.keys()))
-        return {"error": f"Dataset '{dataset_name}' not found. Available datasets: {', '.join(session.dataframes.keys())}"}
+        logger.warn("switch_dataset_not_found", requested_dataset=dataset_name, available_datasets=list(session.dataframes.keys()), session_id=session_id)
+        return {"error": f"数据集 '{dataset_name}' 未找到。可用数据集: {', '.join(session.dataframes.keys())}"}
     
     session.current_df = dataset_name
     switched_df_shape: tuple = session.dataframes[dataset_name].shape # Added type hint
-    logger.info("switch_dataset_success", new_current_dataset=dataset_name, shape=switched_df_shape)
+    logger.info("switch_dataset_success", new_current_dataset=dataset_name, shape=switched_df_shape, session_id=session_id)
     return {
         "success": True,
         "current_dataset": dataset_name,
@@ -414,7 +440,7 @@ async def switch_dataset(dataset_name: str) -> Dict[str, Any]:
     }
 
 @mcp.tool()
-async def get_column_info(column_name: str) -> Dict[str, Any]:
+async def get_column_info(session_id: str, column_name: str) -> Dict[str, Any]:
     """
     Get detailed information about a specific column in the current dataset.
 
@@ -430,16 +456,20 @@ async def get_column_info(column_name: str) -> Dict[str, Any]:
         Dict[str, Any]: A dictionary containing detailed information about the column.
                         Returns `{"error": "message"}` if no dataset/column or an error occurs.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
 
     if df is None:
-        logger.warn("get_column_info_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("get_column_info_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
     
     if column_name not in df.columns:
-        logger.warn("get_column_info_column_not_found", dataset_name=current_dataset_name, column_name=column_name, available_columns=list(df.columns))
-        return {"error": f"Column '{column_name}' not found in dataset '{current_dataset_name}'. Available columns: {', '.join(df.columns)}"}
+        logger.warn("get_column_info_column_not_found", dataset_name=current_dataset_name, column_name=column_name, available_columns=list(df.columns), session_id=session_id)
+        return {"error": f"列 '{column_name}' 在数据集 '{current_dataset_name}' 中未找到。可用列: {', '.join(df.columns)}"}
     
     try:
         col: pd.Series = df[column_name]
@@ -476,15 +506,16 @@ async def get_column_info(column_name: str) -> Dict[str, Any]:
                 "frequency_of_most_frequent": int(value_counts.iloc[0]) if not value_counts.empty else 0
             })
         
-        logger.info("get_column_info_success", dataset_name=current_dataset_name, column_name=column_name)
+        logger.info("get_column_info_success", dataset_name=current_dataset_name, column_name=column_name, session_id=session_id)
         return info
         
     except Exception as e:
-        logger.error("get_column_info_tool_error", dataset_name=current_dataset_name, column_name=column_name, error=str(e), exc_info=True)
+        logger.error("get_column_info_tool_error", dataset_name=current_dataset_name, column_name=column_name, error=str(e), exc_info=True, session_id=session_id)
         return {"error": str(e)}
 
 @mcp.tool()
 async def plot_histogram(
+    session_id: str,
     column: str,
     bins: int = 30,
     title: Optional[str] = None
@@ -501,28 +532,33 @@ async def plot_histogram(
         Dict[str, Any]: A dictionary containing the plot as a Base64 encoded image string
                         and potentially some statistics. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("plot_histogram_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("plot_histogram_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
     
     if column not in df.columns or not pd.api.types.is_numeric_dtype(df[column]):
-        logger.warn("plot_histogram_invalid_column", dataset_name=current_dataset_name, column_name=column)
-        return {"error": f"Column '{column}' is not a valid numeric column in dataset '{current_dataset_name}'."}
+        logger.warn("plot_histogram_invalid_column", dataset_name=current_dataset_name, column_name=column, session_id=session_id)
+        return {"error": f"列 '{column}' 在数据集 '{current_dataset_name}' 中不是一个有效的数值列。"}
 
     # Assuming create_histogram is an async function that returns a Dict
     result: Dict[str, Any] = await create_histogram(df, column, bins, title)
 
     if "error" not in result:
         session.add_to_history("histogram", {"column": column, "bins": bins, "title": title})
-        logger.info("plot_histogram_success", dataset_name=current_dataset_name, column=column, bins=bins)
+        logger.info("plot_histogram_success", dataset_name=current_dataset_name, column=column, bins=bins, session_id=session_id)
     else:
-        logger.error("plot_histogram_tool_error", dataset_name=current_dataset_name, column=column, error=result.get("error"), exc_info=False) # No exc_info as error is from called func
+        logger.error("plot_histogram_tool_error", dataset_name=current_dataset_name, column=column, error=result.get("error"), exc_info=False, session_id=session_id) # No exc_info as error is from called func
     return result
 
 @mcp.tool()
 async def plot_scatter(
+    session_id: str,
     x_column: str,
     y_column: str,
     color_column: Optional[str] = None,
@@ -543,32 +579,37 @@ async def plot_scatter(
         Dict[str, Any]: A dictionary containing the plot as a Base64 encoded image string
                         and potentially correlation statistics. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("plot_scatter_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("plot_scatter_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     # Validate columns
     for col_name in [x_column, y_column]:
         if col_name not in df.columns or not pd.api.types.is_numeric_dtype(df[col_name]):
-            logger.warn("plot_scatter_invalid_column", dataset_name=current_dataset_name, column_name=col_name, type="axis")
-            return {"error": f"Column '{col_name}' for axis is not a valid numeric column in dataset '{current_dataset_name}'."}
+            logger.warn("plot_scatter_invalid_column", dataset_name=current_dataset_name, column_name=col_name, type="axis", session_id=session_id)
+            return {"error": f"用于坐标轴的列 '{col_name}' 在数据集 '{current_dataset_name}' 中不是一个有效的数值列。"}
     if color_column and color_column not in df.columns:
-        logger.warn("plot_scatter_invalid_column", dataset_name=current_dataset_name, column_name=color_column, type="color")
-        return {"error": f"Color column '{color_column}' not found in dataset '{current_dataset_name}'."}
+        logger.warn("plot_scatter_invalid_column", dataset_name=current_dataset_name, column_name=color_column, type="color", session_id=session_id)
+        return {"error": f"颜色列 '{color_column}' 在数据集 '{current_dataset_name}' 中未找到。"}
 
     result: Dict[str, Any] = await create_scatter_plot(df, x_column, y_column, color_column, title)
     
     if "error" not in result:
         session.add_to_history("scatter_plot", {"x_column": x_column, "y_column": y_column, "color_column": color_column, "title": title})
-        logger.info("plot_scatter_success", dataset_name=current_dataset_name, x_column=x_column, y_column=y_column, color_column=color_column)
+        logger.info("plot_scatter_success", dataset_name=current_dataset_name, x_column=x_column, y_column=y_column, color_column=color_column, session_id=session_id)
     else:
-        logger.error("plot_scatter_tool_error", dataset_name=current_dataset_name, x_column=x_column, y_column=y_column, error=result.get("error"))
+        logger.error("plot_scatter_tool_error", dataset_name=current_dataset_name, x_column=x_column, y_column=y_column, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def plot_box(
+    session_id: str,
     columns: List[str],
     title: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -583,38 +624,43 @@ async def plot_box(
         Dict[str, Any]: A dictionary containing the plot as a Base64 encoded image string
                         and potentially summary statistics. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("plot_box_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("plot_box_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     valid_columns: List[str] = []
     if not columns: # Check if columns list is empty
-        logger.warn("plot_box_no_columns_specified", dataset_name=current_dataset_name)
-        return {"error": "No columns specified for box plot."}
+        logger.warn("plot_box_no_columns_specified", dataset_name=current_dataset_name, session_id=session_id)
+        return {"error": "未指定用于箱线图的列。"}
 
     for col_name in columns:
         if col_name not in df.columns or not pd.api.types.is_numeric_dtype(df[col_name]):
-            logger.warn("plot_box_invalid_column", dataset_name=current_dataset_name, column_name=col_name, all_columns=columns)
-            return {"error": f"Column '{col_name}' is not a valid numeric column in dataset '{current_dataset_name}'. Please provide only numeric columns."}
+            logger.warn("plot_box_invalid_column", dataset_name=current_dataset_name, column_name=col_name, all_columns=columns, session_id=session_id)
+            return {"error": f"列 '{col_name}' 在数据集 '{current_dataset_name}' 中不是一个有效的数值列。请仅提供数值列。"}
         valid_columns.append(col_name)
 
     if not valid_columns: # Should be caught by previous checks, but as safeguard
-        logger.warn("plot_box_no_valid_columns_found", dataset_name=current_dataset_name, requested_columns=columns)
-        return {"error": "No valid numeric columns found for box plot."}
+        logger.warn("plot_box_no_valid_columns_found", dataset_name=current_dataset_name, requested_columns=columns, session_id=session_id)
+        return {"error": "未找到用于箱线图的有效数值列。"}
 
     result: Dict[str, Any] = await create_box_plot(df, valid_columns, title)
     
     if "error" not in result:
         session.add_to_history("box_plot", {"columns": valid_columns, "title": title})
-        logger.info("plot_box_success", dataset_name=current_dataset_name, columns=valid_columns)
+        logger.info("plot_box_success", dataset_name=current_dataset_name, columns=valid_columns, session_id=session_id)
     else:
-        logger.error("plot_box_tool_error", dataset_name=current_dataset_name, columns=columns, error=result.get("error"))
+        logger.error("plot_box_tool_error", dataset_name=current_dataset_name, columns=columns, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def plot_correlation_heatmap(
+    session_id: str,
     columns: Optional[List[str]] = None,
     method: str = "pearson"
 ) -> Dict[str, Any]:
@@ -629,41 +675,46 @@ async def plot_correlation_heatmap(
         Dict[str, Any]: A dictionary containing the plot as a Base64 encoded image string.
                         Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("plot_correlation_heatmap_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("plot_correlation_heatmap_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     analysis_df: pd.DataFrame
     numeric_df: pd.DataFrame = df.select_dtypes(include=[np.number])
     if numeric_df.empty:
-        logger.warn("plot_correlation_heatmap_no_numeric_cols", dataset_name=current_dataset_name)
-        return {"error": "No numeric columns to create a heatmap."}
+        logger.warn("plot_correlation_heatmap_no_numeric_cols", dataset_name=current_dataset_name, session_id=session_id)
+        return {"error": "没有数值列可用于创建热力图。"}
 
     if columns:
         valid_cols: List[str] = [col for col in columns if col in numeric_df.columns]
         if not valid_cols or len(valid_cols) < 2:
-            logger.warn("plot_correlation_heatmap_not_enough_valid_cols", dataset_name=current_dataset_name, requested_columns=columns)
-            return {"error": "Not enough valid numeric columns specified for heatmap (minimum 2 required)."}
+            logger.warn("plot_correlation_heatmap_not_enough_valid_cols", dataset_name=current_dataset_name, requested_columns=columns, session_id=session_id)
+            return {"error": "为热力图指定的有效数值列不足（至少需要2列）。"}
         analysis_df = numeric_df[valid_cols]
     else:
         if len(numeric_df.columns) < 2:
-            logger.warn("plot_correlation_heatmap_not_enough_numeric_cols_in_dataset", dataset_name=current_dataset_name, num_numeric_cols=len(numeric_df.columns))
-            return {"error": "Not enough numeric columns in the dataset for a heatmap (minimum 2 required)."}
+            logger.warn("plot_correlation_heatmap_not_enough_numeric_cols_in_dataset", dataset_name=current_dataset_name, num_numeric_cols=len(numeric_df.columns), session_id=session_id)
+            return {"error": "数据集中没有足够的数值列来生成热力图（至少需要2列）。"}
         analysis_df = numeric_df
 
     result: Dict[str, Any] = await create_correlation_heatmap(analysis_df, columns, method) # Pass analysis_df
     
     if "error" not in result:
         session.add_to_history("correlation_heatmap", {"columns": list(analysis_df.columns), "method": method})
-        logger.info("plot_correlation_heatmap_success", dataset_name=current_dataset_name, columns=list(analysis_df.columns), method=method)
+        logger.info("plot_correlation_heatmap_success", dataset_name=current_dataset_name, columns=list(analysis_df.columns), method=method, session_id=session_id)
     else:
-        logger.error("plot_correlation_heatmap_tool_error", dataset_name=current_dataset_name, columns=columns, method=method, error=result.get("error"))
+        logger.error("plot_correlation_heatmap_tool_error", dataset_name=current_dataset_name, columns=columns, method=method, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def plot_time_series(
+    session_id: str,
     date_column: str,
     value_columns: List[str],
     title: Optional[str] = None
@@ -682,42 +733,47 @@ async def plot_time_series(
         Dict[str, Any]: A dictionary containing the plot as a Base64 encoded image string.
                         Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("plot_time_series_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("plot_time_series_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     if not date_column or date_column not in df.columns:
-        logger.warn("plot_time_series_invalid_date_column", dataset_name=current_dataset_name, date_column=date_column)
-        return {"error": f"Date column '{date_column}' not found in dataset '{current_dataset_name}'."}
+        logger.warn("plot_time_series_invalid_date_column", dataset_name=current_dataset_name, date_column=date_column, session_id=session_id)
+        return {"error": f"日期列 '{date_column}' 在数据集 '{current_dataset_name}' 中未找到。"}
 
     if not value_columns:
-        logger.warn("plot_time_series_no_value_columns", dataset_name=current_dataset_name)
-        return {"error": "No value columns specified for the time series plot."}
+        logger.warn("plot_time_series_no_value_columns", dataset_name=current_dataset_name, session_id=session_id)
+        return {"error": "未指定用于时间序列图的数值列。"}
 
     valid_value_columns: List[str] = []
     for vc_name in value_columns:
         if vc_name not in df.columns or not pd.api.types.is_numeric_dtype(df[vc_name]):
-            logger.warn("plot_time_series_invalid_value_column", dataset_name=current_dataset_name, value_column=vc_name)
-            return {"error": f"Value column '{vc_name}' is not a valid numeric column in dataset '{current_dataset_name}'."}
+            logger.warn("plot_time_series_invalid_value_column", dataset_name=current_dataset_name, value_column=vc_name, session_id=session_id)
+            return {"error": f"数值列 '{vc_name}' 在数据集 '{current_dataset_name}' 中不是一个有效的数值列。"}
         valid_value_columns.append(vc_name)
 
     if not valid_value_columns: # Should be caught by previous checks
-        logger.warn("plot_time_series_no_valid_value_columns_found", dataset_name=current_dataset_name)
-        return {"error": "No valid numeric value columns found for time series plot."}
+        logger.warn("plot_time_series_no_valid_value_columns_found", dataset_name=current_dataset_name, session_id=session_id)
+        return {"error": "未找到用于时间序列图的有效数值列。"}
 
     result: Dict[str, Any] = await create_time_series_plot(df, date_column, valid_value_columns, title)
     
     if "error" not in result:
         session.add_to_history("time_series_plot", {"date_column": date_column, "value_columns": valid_value_columns, "title": title})
-        logger.info("plot_time_series_success", dataset_name=current_dataset_name, date_column=date_column, value_columns=valid_value_columns)
+        logger.info("plot_time_series_success", dataset_name=current_dataset_name, date_column=date_column, value_columns=valid_value_columns, session_id=session_id)
     else:
-        logger.error("plot_time_series_tool_error", dataset_name=current_dataset_name, date_column=date_column, value_columns=value_columns, error=result.get("error"))
+        logger.error("plot_time_series_tool_error", dataset_name=current_dataset_name, date_column=date_column, value_columns=value_columns, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def create_interactive_chart(
+    session_id: str,
     plot_type: str,
     **kwargs
 ) -> Dict[str, Any]:
@@ -741,26 +797,31 @@ async def create_interactive_chart(
                         This JSON can be rendered by Plotly.js in the frontend.
                         Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("create_interactive_chart_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("create_interactive_chart_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
     
     # Log the attempt with kwargs for better debugging, but be mindful of sensitive data in kwargs if any.
-    logger.info("create_interactive_chart_attempt", dataset_name=current_dataset_name, plot_type=plot_type, kwargs=kwargs)
+    logger.info("create_interactive_chart_attempt", dataset_name=current_dataset_name, plot_type=plot_type, kwargs=kwargs, session_id=session_id)
 
     result: Dict[str, Any] = await create_interactive_plot(df, plot_type, **kwargs)
 
     if "error" not in result:
         session.add_to_history("interactive_plot", {"plot_type": plot_type, "kwargs_keys": list(kwargs.keys())}) # Log summary
-        logger.info("create_interactive_chart_success", dataset_name=current_dataset_name, plot_type=plot_type)
+        logger.info("create_interactive_chart_success", dataset_name=current_dataset_name, plot_type=plot_type, session_id=session_id)
     else:
-        logger.error("create_interactive_chart_tool_error", dataset_name=current_dataset_name, plot_type=plot_type, kwargs=kwargs, error=result.get("error"))
+        logger.error("create_interactive_chart_tool_error", dataset_name=current_dataset_name, plot_type=plot_type, kwargs=kwargs, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def test_normality(
+    session_id: str,
     columns: List[str],
     alpha: float = 0.05
 ) -> Dict[str, Any]:
@@ -775,38 +836,43 @@ async def test_normality(
         Dict[str, Any]: A dictionary containing the normality test results for each column.
                         Returns `{"error": "message"}` on failure or if columns are unsuitable.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("test_normality_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("test_normality_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     if not columns:
-        logger.warn("test_normality_no_columns_specified", dataset_name=current_dataset_name)
-        return {"error": "No columns specified for normality test."}
+        logger.warn("test_normality_no_columns_specified", dataset_name=current_dataset_name, session_id=session_id)
+        return {"error": "未指定用于正态性检验的列。"}
 
     valid_columns: List[str] = []
     for col_name in columns:
         if col_name not in df.columns or not pd.api.types.is_numeric_dtype(df[col_name]):
-            logger.warn("test_normality_invalid_column", dataset_name=current_dataset_name, column_name=col_name)
-            return {"error": f"Column '{col_name}' is not a valid numeric column for normality testing."}
+            logger.warn("test_normality_invalid_column", dataset_name=current_dataset_name, column_name=col_name, session_id=session_id)
+            return {"error": f"列 '{col_name}' 不是一个有效的数值列，无法进行正态性检验。"}
         valid_columns.append(col_name)
 
     if not valid_columns: # Should be caught by previous checks
-        logger.warn("test_normality_no_valid_columns_found", dataset_name=current_dataset_name, requested_columns=columns)
-        return {"error": "No valid numeric columns found for normality testing."}
+        logger.warn("test_normality_no_valid_columns_found", dataset_name=current_dataset_name, requested_columns=columns, session_id=session_id)
+        return {"error": "未找到用于正态性检验的有效数值列。"}
 
     result: Dict[str, Any] = await normality_test(df, valid_columns, alpha)
     
     if "error" not in result:
         session.add_to_history("normality_test", {"columns": valid_columns, "alpha": alpha})
-        logger.info("test_normality_success", dataset_name=current_dataset_name, columns=valid_columns, alpha=alpha)
+        logger.info("test_normality_success", dataset_name=current_dataset_name, columns=valid_columns, alpha=alpha, session_id=session_id)
     else:
-        logger.error("test_normality_tool_error", dataset_name=current_dataset_name, columns=columns, alpha=alpha, error=result.get("error"))
+        logger.error("test_normality_tool_error", dataset_name=current_dataset_name, columns=columns, alpha=alpha, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def perform_t_test(
+    session_id: str,
     column1: str,
     column2: Optional[str] = None,
     paired: bool = False,
@@ -828,26 +894,30 @@ async def perform_t_test(
         Dict[str, Any]: A dictionary containing the t-test results (statistic, p-value, interpretation).
                         Returns `{"error": "message"}` on failure or invalid input.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("perform_t_test_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("perform_t_test_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     # Validate column1
     if column1 not in df.columns or not pd.api.types.is_numeric_dtype(df[column1]):
-        logger.warn("perform_t_test_invalid_column1", dataset_name=current_dataset_name, column_name=column1)
-        return {"error": f"Column '{column1}' is not a valid numeric column for t-test."}
+        logger.warn("perform_t_test_invalid_column1", dataset_name=current_dataset_name, column_name=column1, session_id=session_id)
+        return {"error": f"列 '{column1}' 不是一个有效的数值列，无法进行 t-检验。"}
 
     # Validate column2 if provided
     if column2 and (column2 not in df.columns or not pd.api.types.is_numeric_dtype(df[column2])):
-        logger.warn("perform_t_test_invalid_column2", dataset_name=current_dataset_name, column_name=column2)
-        return {"error": f"Column '{column2}' is not a valid numeric column for t-test."}
+        logger.warn("perform_t_test_invalid_column2", dataset_name=current_dataset_name, column_name=column2, session_id=session_id)
+        return {"error": f"列 '{column2}' 不是一个有效的数值列，无法进行 t-检验。"}
 
     # Ensure column2 is provided for paired or two-sample (non-one-sample) tests
     if (paired or column2) and not column2: # If paired is true, column2 must be there. If column2 is there, it's two-sample.
-         logger.warn("perform_t_test_missing_column2", dataset_name=current_dataset_name, test_type="paired or two-sample")
-         return {"error": "Column2 must be provided for a paired or two-sample t-test."}
+         logger.warn("perform_t_test_missing_column2", dataset_name=current_dataset_name, test_type="paired or two-sample", session_id=session_id)
+         return {"error": "对于配对或双样本 t-检验，必须提供 Column2。"}
 
 
     result: Dict[str, Any] = await t_test(df, column1, column2, paired, alternative)
@@ -855,13 +925,14 @@ async def perform_t_test(
     if "error" not in result:
         log_params = {"column1": column1, "column2": column2, "paired": paired, "alternative": alternative}
         session.add_to_history("t_test", log_params)
-        logger.info("perform_t_test_success", dataset_name=current_dataset_name, **log_params)
+        logger.info("perform_t_test_success", dataset_name=current_dataset_name, session_id=session_id, **log_params)
     else:
-        logger.error("perform_t_test_tool_error", dataset_name=current_dataset_name, column1=column1, column2=column2, error=result.get("error"))
+        logger.error("perform_t_test_tool_error", dataset_name=current_dataset_name, column1=column1, column2=column2, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def perform_anova(
+    session_id: str,
     dependent_var: str,
     independent_var: str
 ) -> Dict[str, Any]:
@@ -876,24 +947,28 @@ async def perform_anova(
         Dict[str, Any]: A dictionary containing ANOVA results (F-statistic, p-value)
                         and potentially post-hoc test results. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("perform_anova_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("perform_anova_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     if dependent_var not in df.columns or not pd.api.types.is_numeric_dtype(df[dependent_var]):
-        logger.warn("perform_anova_invalid_dependent_var", dataset_name=current_dataset_name, column_name=dependent_var)
-        return {"error": f"Dependent variable '{dependent_var}' must be a numeric column."}
+        logger.warn("perform_anova_invalid_dependent_var", dataset_name=current_dataset_name, column_name=dependent_var, session_id=session_id)
+        return {"error": f"因变量 '{dependent_var}' 必须是数值列。"}
 
     if independent_var not in df.columns: # Categorical check is usually handled by statsmodels, but ensure exists
-        logger.warn("perform_anova_invalid_independent_var", dataset_name=current_dataset_name, column_name=independent_var)
-        return {"error": f"Independent variable '{independent_var}' not found in the dataset."}
+        logger.warn("perform_anova_invalid_independent_var", dataset_name=current_dataset_name, column_name=independent_var, session_id=session_id)
+        return {"error": f"自变量 '{independent_var}' 在数据集中未找到。"}
 
     # Ensure the independent variable has at least 2 groups for ANOVA
     if df[independent_var].nunique() < 2:
-        logger.warn("perform_anova_not_enough_groups", dataset_name=current_dataset_name, column_name=independent_var, num_groups=df[independent_var].nunique())
-        return {"error": f"Independent variable '{independent_var}' must have at least two distinct groups for ANOVA."}
+        logger.warn("perform_anova_not_enough_groups", dataset_name=current_dataset_name, column_name=independent_var, num_groups=df[independent_var].nunique(), session_id=session_id)
+        return {"error": f"自变量 '{independent_var}' 必须至少有两个不同的组才能进行 ANOVA 分析。"}
 
 
     result: Dict[str, Any] = await anova_test(df, dependent_var, independent_var)
@@ -901,13 +976,14 @@ async def perform_anova(
     if "error" not in result:
         log_params = {"dependent_var": dependent_var, "independent_var": independent_var}
         session.add_to_history("anova_test", log_params)
-        logger.info("perform_anova_success", dataset_name=current_dataset_name, **log_params)
+        logger.info("perform_anova_success", dataset_name=current_dataset_name, session_id=session_id, **log_params)
     else:
-        logger.error("perform_anova_tool_error", dataset_name=current_dataset_name, dependent_var=dependent_var, independent_var=independent_var, error=result.get("error"))
+        logger.error("perform_anova_tool_error", dataset_name=current_dataset_name, dependent_var=dependent_var, independent_var=independent_var, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def perform_chi_square(
+    session_id: str,
     column1: str,
     column2: str
 ) -> Dict[str, Any]:
@@ -922,29 +998,34 @@ async def perform_chi_square(
         Dict[str, Any]: A dictionary containing Chi-square test results (statistic, p-value,
                         degrees of freedom) and the contingency table. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("perform_chi_square_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("perform_chi_square_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     for col_name in [column1, column2]:
         if col_name not in df.columns: # Basic check, type check done by chi_square_test
-            logger.warn("perform_chi_square_column_not_found", dataset_name=current_dataset_name, column_name=col_name)
-            return {"error": f"Column '{col_name}' not found in dataset for Chi-square test."}
+            logger.warn("perform_chi_square_column_not_found", dataset_name=current_dataset_name, column_name=col_name, session_id=session_id)
+            return {"error": f"列 '{col_name}' 在数据集中未找到，无法进行卡方检验。"}
 
     result: Dict[str, Any] = await chi_square_test(df, column1, column2)
     
     if "error" not in result:
         log_params = {"column1": column1, "column2": column2}
         session.add_to_history("chi_square_test", log_params)
-        logger.info("perform_chi_square_success", dataset_name=current_dataset_name, **log_params)
+        logger.info("perform_chi_square_success", dataset_name=current_dataset_name, session_id=session_id, **log_params)
     else:
-        logger.error("perform_chi_square_tool_error", dataset_name=current_dataset_name, column1=column1, column2=column2, error=result.get("error"))
+        logger.error("perform_chi_square_tool_error", dataset_name=current_dataset_name, column1=column1, column2=column2, error=result.get("error"), session_id=session_id)
     return result
 
 @mcp.tool()
 async def test_correlation(
+    session_id: str,
     column1: str,
     column2: str,
     method: str = "pearson"
@@ -962,25 +1043,29 @@ async def test_correlation(
         Dict[str, Any]: A dictionary containing the correlation coefficient, p-value,
                         and an interpretation of the test. Returns `{"error": "message"}` on failure.
     """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = DataSession()
+    session = user_sessions[session_id]
+
     df: Optional[pd.DataFrame] = session.get_current_df()
     current_dataset_name: Optional[str] = session.current_df
     if df is None:
-        logger.warn("test_correlation_no_dataset")
-        return {"error": "No dataset loaded. Please upload a file first."}
+        logger.warn("test_correlation_no_dataset", session_id=session_id)
+        return {"error": "没有加载数据集。请先上传文件。"}
 
     for col_name in [column1, column2]:
         if col_name not in df.columns or not pd.api.types.is_numeric_dtype(df[col_name]):
-            logger.warn("test_correlation_invalid_column", dataset_name=current_dataset_name, column_name=col_name)
-            return {"error": f"Column '{col_name}' must be a numeric column for correlation testing."}
+            logger.warn("test_correlation_invalid_column", dataset_name=current_dataset_name, column_name=col_name, session_id=session_id)
+            return {"error": f"列 '{col_name}' 必须是数值列才能进行相关性检验。"}
 
     result: Dict[str, Any] = await correlation_test(df, column1, column2, method)
     
     if "error" not in result:
         log_params = {"column1": column1, "column2": column2, "method": method}
         session.add_to_history("correlation_test", log_params)
-        logger.info("test_correlation_success", dataset_name=current_dataset_name, **log_params)
+        logger.info("test_correlation_success", dataset_name=current_dataset_name, session_id=session_id, **log_params)
     else:
-        logger.error("test_correlation_tool_error", dataset_name=current_dataset_name, column1=column1, column2=column2, method=method, error=result.get("error"))
+        logger.error("test_correlation_tool_error", dataset_name=current_dataset_name, column1=column1, column2=column2, method=method, error=result.get("error"), session_id=session_id)
     return result
 
 # Run the server

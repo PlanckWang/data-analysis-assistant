@@ -378,14 +378,16 @@ class MCPManager:
                 # Raise a more specific error
                 raise exceptions.MCPConnectionError(f"Failed to connect to MCP server: {str(e)}")
     
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any], session_id: str) -> Any:
         """
-        Calls a specific tool on the MCP server with the given arguments.
+        Calls a specific tool on the MCP server with the given arguments for a specific session.
         Establishes connection if one does not exist.
 
         Args:
             tool_name: The name of the tool to call.
             arguments: A dictionary of arguments for the tool.
+            session_id: The ID of the session making the call. This is now implicitly
+                        included in the arguments if the tool expects `session_id`.
 
         Returns:
             The result from the MCP tool execution.
@@ -398,23 +400,27 @@ class MCPManager:
             try:
                 await self.connect()
             except exceptions.MCPConnectionError as e:
-                logger.error("mcp_connection_failed_before_tool_call", tool_name=tool_name, error=str(e))
+                logger.error("mcp_connection_failed_before_tool_call", tool_name=tool_name, session_id=session_id, error=str(e))
                 raise # Re-raise if connect itself failed with MCPConnectionError
             except Exception as e: # Catch other unexpected errors during connect
-                logger.error("mcp_unexpected_connection_error_before_tool_call", tool_name=tool_name, error=str(e), exc_info=True)
+                logger.error("mcp_unexpected_connection_error_before_tool_call", tool_name=tool_name, session_id=session_id, error=str(e), exc_info=True)
                 raise exceptions.MCPConnectionError(f"Unexpected connection attempt error before calling tool '{tool_name}': {str(e)}")
 
         if not self.session_cm: # Re-check after connect attempt
-            logger.error("mcp_still_not_connected_before_tool_call", tool_name=tool_name)
+            logger.error("mcp_still_not_connected_before_tool_call", tool_name=tool_name, session_id=session_id)
             raise exceptions.MCPConnectionError(f"MCP server not connected after connect attempt, cannot call tool '{tool_name}'.")
         
+        # Ensure session_id is part of the arguments passed to the tool
+        # as all tools in server.py now expect it.
+        tool_arguments_with_session_id = {"session_id": session_id, **arguments}
+
         try:
-            logger.info("mcp_calling_tool", tool_name=tool_name, arguments=arguments)
-            result: Any = await self.session_cm.call_tool(tool_name, arguments) # type: ignore
-            logger.info("mcp_tool_call_successful", tool_name=tool_name)
+            logger.info("mcp_calling_tool", tool_name=tool_name, arguments=tool_arguments_with_session_id, session_id=session_id)
+            result: Any = await self.session_cm.call_tool(tool_name, tool_arguments_with_session_id) # type: ignore
+            logger.info("mcp_tool_call_successful", tool_name=tool_name, session_id=session_id)
             return result
         except Exception as e: # Catch errors during the actual tool call
-            logger.error("mcp_tool_execution_error", tool_name=tool_name, arguments=arguments, error=str(e), exc_info=True)
+            logger.error("mcp_tool_execution_error", tool_name=tool_name, arguments=tool_arguments_with_session_id, session_id=session_id, error=str(e), exc_info=True)
             raise exceptions.ToolExecutionError(tool_name, str(e))
 
     async def close(self) -> None:
@@ -497,7 +503,7 @@ async def startup_event() -> None:
 
     if not redis_client or not session_manager:
         logger.critical("redis_or_session_manager_not_initialized_aborting_startup")
-        raise RuntimeError("Failed to connect to Redis and initialize session manager. Application cannot start.")
+        raise RuntimeError("连接 Redis 失败，无法初始化会话管理器。应用程序无法启动。")
 
     try:
         logger.info("application_startup_initiated", service="mcp_manager")
@@ -505,6 +511,10 @@ async def startup_event() -> None:
         logger.info("mcp_manager_connection_attempted") # connect() logs success/failure internally
     except Exception as e: # Catch if connect() itself throws an unhandled error
         logger.error("mcp_manager_initial_connection_failed", error=str(e), exc_info=True)
+
+    # Mount static files
+    app.mount("/static", StaticFiles(directory=settings.STATIC_DIR), name="static")
+    logger.info("static_files_mounted", directory=settings.STATIC_DIR)
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
@@ -597,7 +607,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     logger.error("unhandled_exception", path=str(request.url.path), error=str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": "An unexpected internal server error occurred.", "type": type(exc).__name__},
+        content={"detail": "发生意外的内部服务器错误。", "type": type(exc).__name__},
     )
 
 @app.get("/") # Not an API endpoint, so no /v1 or SuccessResponse
@@ -610,7 +620,7 @@ async def create_session():
     """Create a new chat session"""
     try:
         if not session_manager:
-            raise HTTPException(status_code=503, detail="Session manager not available. Redis might be down.")
+            raise HTTPException(status_code=503, detail="会话管理器不可用。Redis 可能已关闭。")
         session_id = await session_manager.create_session()
         available_providers = LLMProviderFactory.get_available_providers()
 
@@ -637,10 +647,10 @@ async def upload_file(
     session_id = session_id or session_id_query
     if not session_id:
         # This is a client error, HTTPException is appropriate
-        raise HTTPException(status_code=400, detail="Session ID is required")
+        raise HTTPException(status_code=400, detail="会话 ID 是必需的")
     
     if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available.")
+        raise HTTPException(status_code=503, detail="会话管理器不可用。")
 
     session = await session_manager.get_session(session_id) # SessionNotFoundError handled by middleware
     # No need to check `if not session:` here if SessionNotFoundError is raised and handled
@@ -678,12 +688,15 @@ async def upload_file(
             await f.write(content)
         
         # Call MCP tool to process file
+        tool_args = {
+            "file_path": str(file_path),
+            "file_name": file.filename
+            # session_id is added by call_tool
+        }
         result = await mcp_manager.call_tool(
-            "upload_file",
-            {
-                "file_path": str(file_path),
-                "file_name": file.filename
-            }
+            tool_name="upload_file",
+            arguments=tool_args,
+            session_id=session.session_id # Pass session_id to call_tool
         )
         
         # Update session context
@@ -708,7 +721,7 @@ async def upload_file(
 async def chat(request: ChatRequest):
     """Process chat messages"""
     if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available.")
+        raise HTTPException(status_code=503, detail="会话管理器不可用。")
     session = await session_manager.get_session(request.session_id) # SessionNotFoundError handled by middleware
     
     # Add user message to history
@@ -745,7 +758,7 @@ async def chat(request: ChatRequest):
         # Check if the response contains tool calls
         tool_results = []
         if "<tool_call>" in full_response:
-            tool_results = await process_tool_calls(full_response, session)
+            tool_results = await process_tool_calls(full_response, session) # session object contains session_id
         
         # Add assistant message to history
         session.add_message("assistant", full_response)
@@ -768,11 +781,12 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """Stream chat responses"""
     if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available.")
+        raise HTTPException(status_code=503, detail="会话管理器不可用。")
     session = await session_manager.get_session(request.session_id)
-    if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available.")
-    session = await session_manager.get_session(request.session_id) # SessionNotFoundError handled by middleware
+    if not session_manager: # Redundant check, but keeping for safety, consider removing if covered
+        raise HTTPException(status_code=503, detail="会话管理器不可用。")
+    # session = await session_manager.get_session(request.session_id) # SessionNotFoundError handled by middleware
+    # The above line is redundant as session is already fetched.
     
     async def generate():
         try:
@@ -807,7 +821,7 @@ async def chat_stream(request: ChatRequest):
             
             # Process tool calls if any
             if "<tool_call>" in full_response:
-                tool_results = await process_tool_calls(full_response, session)
+                tool_results = await process_tool_calls(full_response, session) # session object contains session_id
                 for result in tool_results:
                     yield f"data: {json.dumps({'type': 'tool_result', 'result': result})}\n\n"
             
@@ -829,12 +843,12 @@ async def switch_provider(request: ProviderSwitchRequest):
     """Switch LLM provider for a session"""
     try:
         if not session_manager:
-            raise HTTPException(status_code=503, detail="Session manager not available.")
+            raise HTTPException(status_code=503, detail="会话管理器不可用。")
         session = await session_manager.get_session(request.session_id)
 
         available = LLMProviderFactory.get_available_providers()
         if request.provider not in available:
-            raise HTTPException(status_code=400, detail=f"Provider {request.provider} not available")
+            raise HTTPException(status_code=400, detail=f"提供商 {request.provider} 不可用")
 
         session.llm_provider = request.provider
         await session_manager.update_session(session)
@@ -851,7 +865,7 @@ async def get_history(session_id: str):
     """Get chat history"""
     try:
         if not session_manager:
-            raise HTTPException(status_code=503, detail="Session manager not available.")
+            raise HTTPException(status_code=503, detail="会话管理器不可用。")
         session = await session_manager.get_session(session_id)
 
         # Original response structure matches ChatHistoryData
@@ -870,79 +884,91 @@ async def get_history(session_id: str):
 async def process_tool_calls(response: str, session: ChatSession) -> List[PyList[PyDict[str, Any]]]:
     """Extract and process tool calls from LLM response"""
     import re
-    
+    # json is already imported at the top of the file
+    # datetime is already imported at the top of the file
+
     tool_results = []
     
-    # Find all tool calls in the response
-    pattern = r'<tool_call>(.*?)</tool_call>'
-    matches = re.findall(pattern, response, re.DOTALL)
+    # Regex to find content between <tool_call> and </tool_call> tags
+    # This regex uses a non-greedy match for the content within the tags
+    pattern = r"<tool_call>(.*?)</tool_call>"
     
-    for match in matches:
+    # re.DOTALL allows . to match newlines, important for multi-line JSON
+    tool_call_matches = re.finditer(pattern, response, re.DOTALL)
+
+    for match in tool_call_matches:
+        tool_call_content = match.group(1).strip() # Extract content and strip whitespace
+        tool_data = {} # Initialize tool_data to ensure it's defined for error logging
+
         try:
-            # Attempt to parse JSON and process the tool call
-            try:
-                tool_data = json.loads(match.strip())
-                tool_name = tool_data.get("tool")
-                arguments = tool_data.get("arguments", {})
+            tool_data = json.loads(tool_call_content)
+            tool_name = tool_data.get("tool")
+            arguments = tool_data.get("arguments", {})
 
-                # Call the tool
-                result = await mcp_manager.call_tool(tool_name, arguments)
+            if not tool_name:
+                logger.warn("process_tool_calls_missing_tool_name", raw_tool_data=tool_call_content, session_id=session.session_id)
+                tool_results.append({
+                    "tool": "error_missing_tool_name",
+                    "error_message": "工具名称在解析的 JSON 中缺失。",
+                    "raw_content_snippet": tool_call_content[:200]
+                })
+                continue
 
-                # Update session context if needed
-                if tool_name == "upload_file" and "error" not in result:
-                    dataset_name = result.get("dataset_name")
+            # session_id is added by mcp_manager.call_tool, but good to have it in `arguments` for logging `tool_results`
+            arguments["session_id"] = session.session_id
+
+            result = await mcp_manager.call_tool(tool_name, arguments, session_id=session.session_id)
+
+            # Update session context if needed (example for upload_file)
+            if tool_name == "upload_file" and "error" not in result:
+                dataset_name = result.get("dataset_name")
+                if dataset_name: # Ensure dataset_name is not None
                     session.context["datasets"][dataset_name] = result
                     session.context["current_dataset"] = dataset_name
-                    if session_manager:
+                    if session_manager: # Check if session_manager is available
                         await session_manager.update_session(session)
 
-                # Add to analysis history
-                session.context["analysis_history"].append({
-                    "type": tool_name,
-                    "timestamp": datetime.now().isoformat(),
-                    "result_summary": str(result)[:200]
-                })
+            # Add to analysis history
+            session.context.setdefault("analysis_history", []).append({ # Ensure analysis_history exists
+                "type": tool_name,
+                "timestamp": datetime.now().isoformat(),
+                "result_summary": str(result)[:200] # Truncate result summary
+            })
 
-                tool_results.append({
-                    "tool": tool_name,
-                    "arguments": arguments,
-                    "result": result
-                })
-
-            except json.JSONDecodeError as e:
-                logger.error("json_decode_error_processing_tool_call",
-                             tool_match_content=match.strip()[:500],
-                             error=str(e),
-                             exc_info=True)
-                tool_results.append({
-                    "tool": "error_parsing_tool_call_json",
-                    "error_message": f"Failed to parse JSON for tool call: {str(e)}",
-                    "raw_content_snippet": match.strip()[:200]
-                })
-            
-        except Exception as e:
-            # This general except block catches errors from mcp_manager.call_tool or other unexpected issues
-            logger.error(f"Error processing tool call: {e}", exc_info=True) # Added exc_info=True for more details
-            # Determine tool_name safely for logging and result
-            parsed_tool_name = "unknown_tool"
-            if 'tool_data' in locals() and isinstance(tool_data, dict): # Check if tool_data was defined and is a dict
-                parsed_tool_name = tool_data.get("tool", "unknown_tool_from_parsed_data")
-            elif 'match' in locals(): # If tool_data parsing failed, try to get info from match
-                 # Basic check if match might contain a tool name, very rough
-                if '"tool":' in match.strip()[:100]: # Check a small part of the match string
-                    try:
-                        # Attempt a very cautious parse just for the tool name if possible
-                        # This is risky, as the JSON is known to be invalid
-                        # A more robust way would be regex, but for now, keep it simple
-                        # For safety, this part is omitted to avoid new errors.
-                        # parsed_tool_name will remain "unknown_tool" or based on prior state.
-                        pass
-                    except: # nosec
-                        pass # Ignore if this cautious parse fails
-            
             tool_results.append({
-                "tool": parsed_tool_name, # Use the safely determined tool name
-                "error": str(e)
+                "tool": tool_name,
+                "arguments": arguments, # Log the arguments including session_id
+                "result": result
+            })
+
+        except json.JSONDecodeError as e:
+            logger.error("json_decode_error_processing_tool_call",
+                         tool_match_content=tool_call_content[:500], # Log more content for debugging
+                         error=str(e),
+                         session_id=session.session_id,
+                         exc_info=True)
+            tool_results.append({
+                "tool": "error_parsing_tool_call_json",
+                "error_message": f"解析工具调用的 JSON 失败: {str(e)}",
+                "raw_content_snippet": tool_call_content[:200]
+            })
+        except Exception as e:
+            # Determine tool_name safely for logging
+            # 'tool_data' will be defined here because it's initialized before the try block.
+            # If json.loads failed, tool_data would be an empty dict.
+            parsed_tool_name_for_error = tool_data.get("tool", "unknown_tool_if_json_parsed_but_no_tool_field") # "如果JSON已解析但无工具字段，则为未知工具"
+            if not tool_call_content: # Should not happen if match was successful
+                 parsed_tool_name_for_error = "unknown_tool_content_extraction_failed" # "未知工具_内容提取失败"
+
+            logger.error("error_processing_tool_call",
+                         tool_name=parsed_tool_name_for_error,
+                         session_id=session.session_id,
+                         error=str(e),
+                         exc_info=True)
+            tool_results.append({
+                "tool": parsed_tool_name_for_error,
+                "error_message": str(e),
+                "raw_content_snippet": tool_call_content[:200] if tool_call_content else "内容不可用"
             })
             
     return tool_results
