@@ -135,6 +135,29 @@ class ChatHistoryData(BaseModel):
     messages: PyList[PyDict[str,str]] = Field(description="A list of chat messages, each with 'role' and 'content'.")
     context: PyDict[str, Any] = Field(description="The current context associated with the chat session (e.g., loaded datasets).")
 
+# For listing datasets
+class DatasetDetail(BaseModel):
+    name: str
+    shape: tuple # Or PyList[int] if preferred for JSON (FastAPI handles tuple fine)
+    columns: int # Renamed from 'column_count' to 'columns' for consistency with MCP tool output
+    is_current: bool
+
+class DatasetListData(BaseModel):
+    datasets: PyList[DatasetDetail]
+    current_dataset: Optional[str]
+    total_datasets: int
+
+# For switching dataset
+class SwitchDatasetRequest(BaseModel):
+    session_id: str
+    dataset_name: str
+
+class SwitchDatasetData(BaseModel):
+    success: bool
+    current_dataset: Optional[str]
+    shape: Optional[tuple] # Or PyList[int]
+    message: Optional[str] = None
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -881,6 +904,98 @@ async def get_history(session_id: str):
         logger.error(f"Unexpected error in /api/v1/history/{session_id}: {e}", exc_info=True)
         raise
 
+# --- Dataset Management Endpoints ---
+
+@app.get("/api/v1/datasets/{session_id}", response_model=SuccessResponse[DatasetListData])
+async def list_datasets_endpoint(session_id: str):
+    """List all available datasets in the current session."""
+    if not session_manager:
+        raise HTTPException(status_code=503, detail="会话管理器不可用。")
+
+    session = await session_manager.get_session(session_id) # Handles SessionNotFoundError
+
+    try:
+        # session_id for the tool arguments is handled by mcp_manager.call_tool
+        tool_result = await mcp_manager.call_tool(
+            tool_name="list_datasets",
+            arguments={}, # list_datasets tool in server.py now only needs session_id
+            session_id=session.session_id
+        )
+
+        if isinstance(tool_result, dict) and "error" in tool_result:
+            logger.error("list_datasets_tool_error_response", session_id=session_id, error=tool_result["error"])
+            # Use a generic message or the one from the tool if safe
+            raise HTTPException(status_code=500, detail=f"获取数据集列表失败: {tool_result['error']}")
+
+        # Ensure the structure matches DatasetListData, adapt if necessary
+        # The mcp tool 'list_datasets' returns a dict with 'datasets', 'current_dataset', 'total_datasets'
+        # which matches DatasetListData structure.
+        return SuccessResponse[DatasetListData](data=DatasetListData(**tool_result))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing datasets for session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="获取数据集列表时发生意外错误。")
+
+
+@app.post("/api/v1/datasets/switch", response_model=SuccessResponse[SwitchDatasetData])
+async def switch_dataset_endpoint(request: SwitchDatasetRequest):
+    """Switch the active dataset for the session."""
+    if not session_manager:
+        raise HTTPException(status_code=503, detail="会话管理器不可用。")
+
+    session = await session_manager.get_session(request.session_id) # Handles SessionNotFoundError
+
+    try:
+        tool_args = {"dataset_name": request.dataset_name}
+        # session_id for the tool arguments is handled by mcp_manager.call_tool
+        tool_result = await mcp_manager.call_tool(
+            tool_name="switch_dataset",
+            arguments=tool_args,
+            session_id=session.session_id
+        )
+
+        if isinstance(tool_result, dict) and "error" in tool_result:
+            logger.error("switch_dataset_tool_error_response", session_id=request.session_id, dataset_name=request.dataset_name, error=tool_result["error"])
+            # It's better if the tool itself doesn't return "success: False" but an error structure
+            # For now, we adapt to the example SwitchDatasetData which has a success field.
+            # If tool returns an error, we map it to a failed SwitchDatasetData or raise HTTPException
+            # Let's assume tool_result for error is like `{"error": "some message"}`
+            # and for success `{"success": True, "current_dataset": "name", "shape": [rows, cols]}`
+            raise HTTPException(status_code=400, detail=f"切换数据集失败: {tool_result['error']}")
+
+
+        # Assuming successful tool_result structure matches SwitchDatasetData directly or needs minor mapping
+        # The MCP tool 'switch_dataset' returns: {"success": True, "current_dataset": dataset_name, "shape": switched_df_shape}
+        # This maps well to SwitchDatasetData.
+        # If the tool explicitly returns `{"success": False, "message": "reason"}`, that would also map.
+
+        # Update session context with the new current_dataset
+        # The tool call itself should handle updating the DataSession on the server side.
+        # Here, we might want to update the ChatSession's context if it's not automatically synced
+        # or if the switch_dataset tool doesn't modify the ChatSession context directly (which it should).
+        # For now, assuming the tool handles the server-side session state.
+        # If the client needs to reflect this change immediately without another history call,
+        # the session object in chatbot_app.py might need updating too, but that's more complex.
+        # The `switch_dataset` tool in `server.py` already updates `session.current_df`.
+        # The `ChatSession` object here in `chatbot_app.py`'s `session` variable will be updated
+        # if `session_manager.update_session(session)` is called after the tool modified it.
+        # However, the MCP tool modifies its own DataSession, not the ChatSession here.
+        # This means the ChatSession's context.current_dataset might become stale until next history load.
+        # For now, we trust the client to re-fetch history or context as needed after switching.
+        # A more advanced implementation might involve the MCP tool returning enough info to update
+        # the ChatSession context here, or a separate mechanism.
+
+        return SuccessResponse[SwitchDatasetData](data=SwitchDatasetData(**tool_result))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error switching dataset for session {request.session_id} to {request.dataset_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="切换数据集时发生意外错误。")
+
+
 async def process_tool_calls(response: str, session: ChatSession) -> List[PyList[PyDict[str, Any]]]:
     """Extract and process tool calls from LLM response"""
     import re
@@ -892,7 +1007,7 @@ async def process_tool_calls(response: str, session: ChatSession) -> List[PyList
     # Regex to find content between <tool_call> and </tool_call> tags
     # This regex uses a non-greedy match for the content within the tags
     pattern = r"<tool_call>(.*?)</tool_call>"
-    
+
     # re.DOTALL allows . to match newlines, important for multi-line JSON
     tool_call_matches = re.finditer(pattern, response, re.DOTALL)
 

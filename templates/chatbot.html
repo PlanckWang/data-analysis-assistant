@@ -357,6 +357,15 @@
                     <div id="datasetsList">
                         <p class="text-muted small">尚未加载数据集</p>
                     </div>
+                    <div class="dataset-controls mt-2">
+                        <label for="datasetSelect" class="form-label small">当前数据集:</label>
+                        <select id="datasetSelect" name="datasetSelect" class="form-select form-select-sm mb-2">
+                            <option value="">-- 无可用数据集 --</option>
+                        </select>
+                        <button id="switchDatasetButton" onclick="handleSwitchDataset()" class="btn btn-sm btn-outline-secondary w-100">
+                            <i class="fas fa-exchange-alt"></i> 切换数据集
+                        </button>
+                    </div>
                 </div>
                 
                 <!-- Quick Actions -->

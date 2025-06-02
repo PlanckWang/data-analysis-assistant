@@ -51,9 +51,6 @@ DEFAULT_LLM_PROVIDER=openai
 ```bash
 # 启动聊天机器人界面
 python -m src.chatbot_app
-
-# 或者使用传统的 Web 界面
-python -m src.web_app
 ```
 
 访问 http://localhost:8000 开始使用。
@@ -84,7 +81,6 @@ data_analysis/
 ├── src/
 │   ├── server.py          # MCP 服务器实现
 │   ├── chatbot_app.py     # 聊天机器人 Web 应用
-│   ├── web_app.py         # 传统 Web 界面（可选）
 │   ├── llm_providers.py   # LLM 提供商实现
 │   ├── visualization.py   # 数据可视化工具
 │   └── statistical_tests.py # 统计检验工具
