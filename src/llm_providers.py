@@ -310,109 +310,6 @@ class AnthropicProvider(LLMProvider):
 
 
 class DeepSeekProvider(LLMProvider):
-    """DeepSeek provider"""
-
-    def __init__(self) -> None:
-        """
-        Initializes the DeepSeekProvider.
-
-        Raises:
-            exceptions.LLMProviderError: If the DeepSeek API key is not found in environment variables.
-        """
-            if msg.role == "user":
-                formatted.append(f"Human: {msg.content}")
-            elif msg.role == "assistant":
-                formatted.append(f"Assistant: {msg.content}")
-            elif msg.role == "system":
-                # Add system message at the beginning
-                formatted.insert(0, msg.content)
-        
-        # Ensure the conversation ends with Human: for Claude to respond
-        if not formatted[-1].startswith("Human:"):
-            formatted.append("Human: Please respond to the above.")
-        
-        formatted.append("Assistant:")
-        
-        return "\n\n".join(formatted)
-    
-    async def chat(
-        self,
-        messages: List[Message],
-        stream: bool = True,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None
-    ) -> AsyncGenerator[str, None]:
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json"
-        }
-        
-        # Extract system message if present
-        system_message = None
-        chat_messages = []
-        
-        for msg in messages:
-            if msg.role == "system":
-                system_message = msg.content
-            else:
-                chat_messages.append(msg)
-        
-        # Format messages for Claude API v2
-        formatted_messages = []
-        for msg in chat_messages:
-            formatted_messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
-        
-        data = {
-            "model": self.model,
-            "messages": formatted_messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens or 4096,
-            "stream": stream
-        }
-        
-        if system_message:
-            data["system"] = system_message
-        
-        async with httpx.AsyncClient() as client:
-            if stream:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/messages",
-                    headers=headers,
-                    json=data,
-                    timeout=60.0
-                ) as response:
-                    response.raise_for_status()
-                    
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            
-                            try:
-                                chunk = json.loads(data_str)
-                                if chunk.get("type") == "content_block_delta":
-                                    if "delta" in chunk and "text" in chunk["delta"]:
-                                        yield chunk["delta"]["text"]
-                            except json.JSONDecodeError:
-                                continue
-            else:
-                response = await client.post(
-                    f"{self.base_url}/messages",
-                    headers=headers,
-                    json=data,
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                result = response.json()
-                
-                if "content" in result and result["content"]:
-                    yield result["content"][0]["text"]
-
-
 class DeepSeekProvider(LLMProvider):
     """DeepSeek provider"""
     
@@ -463,14 +360,8 @@ class DeepSeekProvider(LLMProvider):
             "Content-Type": "application/json"
         }
         
+        # Corrected data initialization - remove the duplicate
         data: Dict[str, Any] = {
-            "model": self.model,
-            "messages": self.format_messages(messages),
-            "temperature": temperature,
-            "stream": stream
-        }
-
-        data = {
             "model": self.model,
             "messages": self.format_messages(messages),
             "temperature": temperature,
