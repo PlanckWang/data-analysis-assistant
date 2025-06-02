@@ -58,6 +58,7 @@ class DataSession:
         self.dataframes: Dict[str, pd.DataFrame] = {}
         self.current_df: Optional[str] = None
         self.analysis_history: List[Dict[str, Any]] = []
+        logger.info("DataSession_initialized_in_memory", message="DataSession is using in-memory storage. All data will be lost on server restart.")
     
     def add_dataframe(self, name: str, df: pd.DataFrame) -> None:
         """

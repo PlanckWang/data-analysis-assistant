@@ -101,10 +101,6 @@ async def init_mcp_client():
                 tools = await session.list_tools()
                 logger.info(f"Connected to MCP server. Available tools: {[t.name for t in tools]}")
                 
-                # Keep the session alive
-                while True:
-                    await asyncio.sleep(1)
-                    
     except Exception as e:
         logger.error(f"Failed to connect to MCP server: {e}")
         raise

@@ -495,6 +495,10 @@ async def startup_event() -> None:
         # Consider if app should hard fail to start if Redis is unavailable.
         # For now, it will continue, but session-dependent routes will fail.
 
+    if not redis_client or not session_manager:
+        logger.critical("redis_or_session_manager_not_initialized_aborting_startup")
+        raise RuntimeError("Failed to connect to Redis and initialize session manager. Application cannot start.")
+
     try:
         logger.info("application_startup_initiated", service="mcp_manager")
         await mcp_manager.connect()
@@ -705,9 +709,6 @@ async def chat(request: ChatRequest):
     """Process chat messages"""
     if not session_manager:
         raise HTTPException(status_code=503, detail="Session manager not available.")
-    session = await session_manager.get_session(request.session_id)
-    if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available.")
     session = await session_manager.get_session(request.session_id) # SessionNotFoundError handled by middleware
     
     # Add user message to history
@@ -878,64 +879,72 @@ async def process_tool_calls(response: str, session: ChatSession) -> List[PyList
     
     for match in matches:
         try:
-            # Parse JSON
-            tool_data = json.loads(match.strip())
-            tool_name = tool_data.get("tool")
-            arguments = tool_data.get("arguments", {})
-            
-            # Call the tool
-            result = await mcp_manager.call_tool(tool_name, arguments)
-            
-            # Update session context if needed
-            if tool_name == "upload_file" and "error" not in result:
-                dataset_name = result.get("dataset_name")
-                session.context["datasets"][dataset_name] = result
-                session.context["current_dataset"] = dataset_name
-                # Update session in Redis after upload_file tool call if it modifies context
-                if session_manager: # Check if session_manager is initialized
-                    await session_manager.update_session(session)
-            
-            # Add to analysis history
-            session.context["analysis_history"].append({
-                "type": tool_name,
-                "timestamp": datetime.now().isoformat(),
-                "result_summary": str(result)[:200]
-            })
-            
-            tool_results.append({
-                "tool": tool_name,
-                "arguments": arguments,
-                "result": result
-            })
-            
-        except Exception as e:
-            logger.error(f"Error processing tool call: {e}")
-            # Specific handling for JSONDecodeError
-            if isinstance(e, json.JSONDecodeError):
-                logger.error(
-                    "json_decode_error_processing_tool_call",
-                    tool_match_content=match.strip()[:500], # Log first 500 chars of what failed to parse
-                    error=str(e),
-                    exc_info=True # Include stack trace
-                )
+            # Attempt to parse JSON and process the tool call
+            try:
+                tool_data = json.loads(match.strip())
+                tool_name = tool_data.get("tool")
+                arguments = tool_data.get("arguments", {})
+
+                # Call the tool
+                result = await mcp_manager.call_tool(tool_name, arguments)
+
+                # Update session context if needed
+                if tool_name == "upload_file" and "error" not in result:
+                    dataset_name = result.get("dataset_name")
+                    session.context["datasets"][dataset_name] = result
+                    session.context["current_dataset"] = dataset_name
+                    if session_manager:
+                        await session_manager.update_session(session)
+
+                # Add to analysis history
+                session.context["analysis_history"].append({
+                    "type": tool_name,
+                    "timestamp": datetime.now().isoformat(),
+                    "result_summary": str(result)[:200]
+                })
+
+                tool_results.append({
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "result": result
+                })
+
+            except json.JSONDecodeError as e:
+                logger.error("json_decode_error_processing_tool_call",
+                             tool_match_content=match.strip()[:500],
+                             error=str(e),
+                             exc_info=True)
                 tool_results.append({
                     "tool": "error_parsing_tool_call_json",
                     "error_message": f"Failed to parse JSON for tool call: {str(e)}",
-                    "raw_content_snippet": match.strip()[:200] # Shorter snippet for the actual result
+                    "raw_content_snippet": match.strip()[:200]
                 })
-            else:
-                # General error handling
-                logger.error(
-                    "error_processing_tool_call",
-                    tool_name=tool_data.get("tool", "unknown_tool_due_to_earlier_error") if 'tool_data' in locals() else "unknown_tool_json_error",
-                    error=str(e),
-                    exc_info=True # Include stack trace
-                )
-                tool_results.append({
-                    "tool": tool_data.get("tool", "error") if 'tool_data' in locals() else "error_in_tool_processing",
-                    "error": str(e)
-                })
-    
+            
+        except Exception as e:
+            # This general except block catches errors from mcp_manager.call_tool or other unexpected issues
+            logger.error(f"Error processing tool call: {e}", exc_info=True) # Added exc_info=True for more details
+            # Determine tool_name safely for logging and result
+            parsed_tool_name = "unknown_tool"
+            if 'tool_data' in locals() and isinstance(tool_data, dict): # Check if tool_data was defined and is a dict
+                parsed_tool_name = tool_data.get("tool", "unknown_tool_from_parsed_data")
+            elif 'match' in locals(): # If tool_data parsing failed, try to get info from match
+                 # Basic check if match might contain a tool name, very rough
+                if '"tool":' in match.strip()[:100]: # Check a small part of the match string
+                    try:
+                        # Attempt a very cautious parse just for the tool name if possible
+                        # This is risky, as the JSON is known to be invalid
+                        # A more robust way would be regex, but for now, keep it simple
+                        # For safety, this part is omitted to avoid new errors.
+                        # parsed_tool_name will remain "unknown_tool" or based on prior state.
+                        pass
+                    except: # nosec
+                        pass # Ignore if this cautious parse fails
+            
+            tool_results.append({
+                "tool": parsed_tool_name, # Use the safely determined tool name
+                "error": str(e)
+            })
+            
     return tool_results
 
 if __name__ == "__main__":
