@@ -1,0 +1,18 @@
+/* In static/css/chatbot_styles.css */
+.json-object, .json-array { padding-left: 20px; margin: 5px 0; }
+.json-object dt { font-weight: bold; color: #333; }
+.json-object dd { margin-left: 20px; padding-left: 10px; border-left: 2px solid #eee; }
+.json-table { border-collapse: collapse; width: 100%; margin: 10px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.json-table th, .json-table td { border: 1px solid #ddd; padding: 10px; text-align: left; vertical-align: top; }
+.json-table th { background-color: #f7f7f7; color: #333; font-weight: bold; }
+.json-table td .json-table { margin: 0; box-shadow: none; width: auto; } /* Nested tables smaller */
+.json-string { color: #008000; } /* Green */
+.json-string pre { white-space: pre-wrap; word-wrap: break-word; margin:0; padding:0; background:transparent; border:none; color: #008000;}
+.json-number { color: #ff8c00; } /* DarkOrange */
+.json-boolean { color: #0000ff; } /* Blue */
+.json-null { color: #800080; } /* Purple */
+.json-fallback { color: #777; } /* Grey for unexpected */
+.json-error-server { color: red; font-weight: bold; padding: 5px; border: 1px solid red; background-color: #ffebeb;}
+.tool-error-message pre { color: red; }
+/* Ensure tool result divs have some base styling if not already present */
+.tool-result { margin-top: 5px; padding: 10px; background-color: #f9f9f9; border: 1px solid #eee; border-radius: 4px; }

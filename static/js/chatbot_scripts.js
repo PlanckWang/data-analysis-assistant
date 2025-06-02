@@ -3,28 +3,66 @@ let sessionId = null;
         let availableProviders = [];
         let isProcessing = false;
 
+        // Element selectors
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const fileInput = document.getElementById('fileInput');
+        const uploadArea = document.getElementById('uploadArea');
+        const datasetSelect = document.getElementById('datasetSelect');
+        const switchDatasetButton = document.getElementById('switchDatasetButton');
+        const chatLog = document.getElementById('messagesContainer'); // Assuming this is the main chat log
+
+        // Function to re-initialize session (reloads the page)
+        function reinitializeSession() {
+            location.reload();
+        }
+
+        function disableAllInputs() {
+            if (messageInput) messageInput.disabled = true;
+            if (sendButton) sendButton.disabled = true;
+            if (fileInput) fileInput.disabled = true;
+            if (uploadArea) uploadArea.style.pointerEvents = 'none'; // To prevent drag/drop and click
+            if (datasetSelect) datasetSelect.disabled = true;
+            if (switchDatasetButton) switchDatasetButton.disabled = true;
+            document.querySelectorAll('.provider-button').forEach(button => button.disabled = true);
+            isProcessing = true; // Prevent sending messages if session is expired
+            updateSendButton(); // Reflect disabled state on send button if it uses isProcessing
+        }
+
+        function enableAllInputs() {
+            if (messageInput) messageInput.disabled = false;
+            // sendButton enabled by updateSendButton based on input
+            if (fileInput) fileInput.disabled = false;
+            if (uploadArea) uploadArea.style.pointerEvents = 'auto';
+            if (datasetSelect) datasetSelect.disabled = false; // Will be re-enabled by populateDatasetSelect if datasets exist
+            if (switchDatasetButton) switchDatasetButton.disabled = false; // Same as above
+            document.querySelectorAll('.provider-button').forEach(button => button.disabled = false);
+            isProcessing = false;
+            updateSendButton();
+        }
+
+
         // Initialize session
         async function initSession() {
+            disableAllInputs(); // Disable inputs while initializing
             try {
                 const response = await fetch('/api/v1/session', { method: 'POST' });
                 const parsedResponse = await response.json();
-                if (parsedResponse.status === 'success' && parsedResponse.data) {
+                if (response.ok && parsedResponse.status === 'success' && parsedResponse.data) {
                     sessionId = parsedResponse.data.session_id;
                     availableProviders = parsedResponse.data.available_providers;
                     currentProvider = parsedResponse.data.default_provider;
                     document.getElementById('sessionInfo').textContent = `会话 ID: ${sessionId.substring(0, 8)}...`;
+                    enableAllInputs(); // Enable inputs after successful session init
+                    setupProviders();
+                    await fetchDatasetList(); // Fetch datasets after session is up
                 } else {
-                    throw new Error(parsedResponse.message || 'Failed to initialize session data.');
+                    throw new Error(parsedResponse.message || parsedResponse.detail || '未能初始化会话数据。');
                 }
-
-                // Setup providers
-
-                // Setup providers
-                setupProviders();
-
             } catch (error) {
-                console.error('Failed to initialize session:', error);
-                showError('初始化失败，请刷新页面重试');
+                console.error('初始化会话失败:', error);
+                addSystemMessage(`初始化会话失败: ${error.message}. 请刷新页面重试.`);
+                disableAllInputs(); // Keep inputs disabled on failure
             }
         }
 
@@ -148,51 +186,161 @@ let sessionId = null;
                     body: formData
                 });
 
-                const parsedResponse = await response.json();
                 hideTypingIndicator();
 
-                if (response.ok && parsedResponse.status === 'success' && parsedResponse.data && parsedResponse.data.result) {
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        addSystemMessage('您的会话已过期，请刷新页面或点击<a href="#" onclick="reinitializeSession()">这里</a>重新开始。');
+                        disableAllInputs();
+                        throw new Error('Session expired');
+                    }
+                    const errorData = await response.json().catch(() => ({ detail: '上传文件时发生未知服务端错误。' }));
+                    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+                }
+
+                const parsedResponse = await response.json();
+                if (parsedResponse.status === 'success' && parsedResponse.data && parsedResponse.data.result) {
                     const uploadData = parsedResponse.data.result;
                     if (uploadData.error) {
                         addAssistantMessage(`上传失败: ${uploadData.error}`);
                     } else {
-                        updateDatasetsList(uploadData);
+                        // The old updateDatasetsList might be removed or repurposed.
+                        // The new dropdown will be updated by fetchDatasetList.
                         addAssistantMessage(`文件 "${uploadData.dataset_name}" 上传成功！\n\n数据集信息：\n- 行数: ${uploadData.shape[0]}\n- 列数: ${uploadData.shape[1]}\n- 内存占用: ${uploadData.memory_usage.toFixed(2)} MB\n\n您可以开始询问关于这个数据集的问题了。`);
+                        await fetchDatasetList(); // Refresh dataset dropdown
                     }
                 } else {
-                     addAssistantMessage(`文件上传失败: ${parsedResponse.detail || response.statusText || '未知错误'}`);
+                     addAssistantMessage(`文件上传失败: ${parsedResponse.message || parsedResponse.detail || '解析响应失败'}`);
                 }
 
             } catch (error) {
                 hideTypingIndicator();
-                addAssistantMessage(`上传出错: ${error.message || '网络错误'}`);
+                if (error.message !== 'Session expired') {
+                    addAssistantMessage(`上传出错: ${error.message || '网络错误'}`);
+                }
+            } finally {
+                isProcessing = false;
+                updateSendButton();
             }
         }
 
-        // Update datasets list
-        function updateDatasetsList(datasetInfo) {
-            const container = document.getElementById('datasetsList');
+        // Populate dataset select dropdown
+        function populateDatasetSelect(datasetListData) {
+            if (!datasetSelect || !switchDatasetButton) return;
 
-            // Create dataset item if it doesn't exist
-            let item = document.querySelector(`[data-dataset="${datasetInfo.dataset_name}"]`);
-            if (!item) {
-                item = document.createElement('div');
-                item.className = 'dataset-item active';
-                item.dataset.dataset = datasetInfo.dataset_name;
-                container.appendChild(item);
+            datasetSelect.innerHTML = ''; // Clear existing options
+            const datasetsListDiv = document.getElementById('datasetsList');
+            if (datasetsListDiv) datasetsListDiv.innerHTML = ''; // Clear the old list display area
+
+            if (!datasetListData || !datasetListData.datasets || datasetListData.datasets.length === 0) {
+                const option = document.createElement('option');
+                option.value = "";
+                option.textContent = "-- 无可用数据集 --";
+                datasetSelect.appendChild(option);
+                datasetSelect.disabled = true;
+                switchDatasetButton.disabled = true;
+                 if (datasetsListDiv) { // Update the old list display area as well
+                    const p = document.createElement('p');
+                    p.className = 'text-muted small';
+                    p.textContent = '尚未加载数据集';
+                    datasetsListDiv.appendChild(p);
+                }
+                return;
             }
 
-            item.innerHTML = `
-                <strong>${datasetInfo.dataset_name}</strong><br>
-                <small class="text-muted">
-                    ${datasetInfo.shape[0]} 行 × ${datasetInfo.shape[1]} 列
-                </small>
-            `;
+            datasetListData.datasets.forEach(ds => {
+                const option = document.createElement('option');
+                option.value = ds.name;
+                option.textContent = `${ds.name} (${ds.shape[0]}x${ds.shape[1]})`;
+                if (ds.is_current || ds.name === datasetListData.current_dataset) {
+                    option.selected = true;
+                    option.textContent += ' (当前)';
+                }
+                datasetSelect.appendChild(option);
 
-            // Remove empty message
-            const emptyMsg = container.querySelector('.text-muted.small');
-            if (emptyMsg) emptyMsg.remove();
+                // Optionally, if you still want to populate the old datasetsList div:
+                if (datasetsListDiv) {
+                    const item = document.createElement('div');
+                    item.className = `dataset-item ${ds.is_current || ds.name === datasetListData.current_dataset ? 'active' : ''}`;
+                    item.dataset.dataset = ds.name;
+                    item.innerHTML = `<strong>${ds.name}</strong><br><small class="text-muted">${ds.shape[0]} 行 × ${ds.shape[1]} 列</small>`;
+                    datasetsListDiv.appendChild(item);
+                }
+            });
+            datasetSelect.disabled = false;
+            switchDatasetButton.disabled = false;
         }
+
+        // Fetch dataset list from server
+        async function fetchDatasetList() {
+            if (!sessionId) return;
+
+            try {
+                const response = await fetch(`/api/v1/datasets/${sessionId}`);
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        addSystemMessage('您的会话已过期，请刷新页面或点击<a href="#" onclick="reinitializeSession()">这里</a>重新开始。');
+                        disableAllInputs();
+                        return; // Stop further processing
+                    }
+                    throw new Error(`获取数据集列表失败: ${response.statusText} (${response.status})`);
+                }
+                const result = await response.json();
+                if (result.status === 'success' && result.data) {
+                    populateDatasetSelect(result.data);
+                } else {
+                    throw new Error(result.message || result.detail || '获取数据集列表时服务器返回错误');
+                }
+            } catch (error) {
+                console.error('获取数据集列表错误:', error);
+                addSystemMessage(`获取数据集列表时出错: ${error.message}`);
+                populateDatasetSelect(null); // Clear or disable list on error
+            }
+        }
+
+        // Handle dataset switch
+        async function handleSwitchDataset() {
+            if (!sessionId || !datasetSelect.value) {
+                addSystemMessage('请先选择一个数据集进行切换。');
+                return;
+            }
+            const selectedDataset = datasetSelect.value;
+
+            try {
+                switchDatasetButton.disabled = true;
+                switchDatasetButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 切换中...';
+
+                const response = await fetch('/api/v1/datasets/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, dataset_name: selectedDataset })
+                });
+
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        addSystemMessage('您的会话已过期，请刷新页面或点击<a href="#" onclick="reinitializeSession()">这里</a>重新开始。');
+                        disableAllInputs();
+                        return; // Stop further processing
+                    }
+                    const errorResult = await response.json().catch(() => ({detail: "切换数据集时发生未知服务端错误。"}));
+                    throw new Error(errorResult.detail || `切换数据集失败: ${response.statusText} (${response.status})`);
+                }
+                const result = await response.json();
+                if (result.status === 'success' && result.data && result.data.success) {
+                    addSystemMessage(`已成功切换到数据集: ${result.data.current_dataset}`);
+                    await fetchDatasetList(); // Refresh dataset list and current status
+                } else {
+                    throw new Error(result.message || (result.data && result.data.message) || '切换数据集失败，服务器返回否定响应。');
+                }
+            } catch (error) {
+                console.error('切换数据集错误:', error);
+                addSystemMessage(`切换数据集时出错: ${error.message}`);
+            } finally {
+                switchDatasetButton.disabled = false; // Re-enable, populateDatasetSelect will manage final state
+                switchDatasetButton.innerHTML = '<i class="fas fa-exchange-alt"></i> 切换数据集';
+            }
+        }
+
 
         // Send message
         async function sendMessage() {
@@ -219,6 +367,21 @@ let sessionId = null;
                         provider: currentProvider
                     })
                 });
+
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        hideTypingIndicator();
+                        addSystemMessage('您的会话已过期，请刷新页面或点击<a href="#" onclick="reinitializeSession()">这里</a>重新开始。');
+                        disableAllInputs();
+                        throw new Error('Session expired before stream started');
+                    }
+                    const errorText = await response.text();
+                    hideTypingIndicator();
+                    addAssistantMessage(`建立流式连接失败: ${errorText || response.statusText}`);
+                    isProcessing = false; // Reset processing state
+                    updateSendButton(); // Update button based on new state
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -249,10 +412,22 @@ let sessionId = null;
                                 } else if (data.type === 'tool_result') {
                                     displayToolResult(data.result);
                                 } else if (data.type === 'error') {
-                                    addAssistantMessage(`错误: ${data.error}`);
+                                    console.error('Stream error from server:', data.error);
+                                    if (data.error.toLowerCase().includes('session not found') ||
+                                        data.error.toLowerCase().includes('session has expired') ||
+                                        data.error.toLowerCase().includes('会话未找到') ||
+                                        data.error.toLowerCase().includes('redis might be down')) {
+                                        addSystemMessage('您的会话已过期或无效，请刷新页面或点击<a href="#" onclick="reinitializeSession()">这里</a>重新开始。');
+                                        disableAllInputs();
+                                        if (reader) reader.cancel().catch(e => console.error("Error cancelling reader:", e));
+                                        return;
+                                    } else {
+                                        addAssistantMessage(`流式响应错误: ${data.error}`);
+                                    }
                                 }
                             } catch (e) {
                                 console.error('Error parsing SSE data:', e);
+                                addAssistantMessage(`解析流数据时出错: ${e.message}`);
                             }
                         }
                     }
@@ -260,40 +435,152 @@ let sessionId = null;
 
             } catch (error) {
                 hideTypingIndicator();
-                addAssistantMessage(`发生错误: ${error.message}`);
+                if (error.message !== 'Session expired before stream started' && !error.message.toLowerCase().includes('session expired')) {
+                    addAssistantMessage(`发生错误: ${error.message}`);
+                }
             } finally {
                 isProcessing = false;
-                updateSendButton();
+                updateSendButton(); // This will re-enable send button if messageInput has content
             }
         }
 
-        // Display tool results
-        function displayToolResult(result) {
-            const container = document.getElementById('messagesContainer');
-            const lastMessage = container.lastElementChild;
+        function escapeHtml(unsafe) {
+            if (unsafe === null || unsafe === undefined) return '';
+            return String(unsafe)
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
 
-            if (result.result && result.result.image) {
-                // Display image visualization
-                const img = document.createElement('img');
-                img.src = result.result.image;
-                img.className = 'visualization';
-                lastMessage.querySelector('.message-content').appendChild(img);
-            } else if (result.result && result.result.plot_json) {
-                // Display Plotly visualization
-                const plotDiv = document.createElement('div');
-                plotDiv.className = 'visualization';
-                lastMessage.querySelector('.message-content').appendChild(plotDiv);
-
-                const plotData = JSON.parse(result.result.plot_json);
-                Plotly.newPlot(plotDiv, plotData.data, plotData.layout);
-            } else {
-                // Display other results
-                const resultDiv = document.createElement('div');
-                resultDiv.className = 'tool-result';
-                resultDiv.innerHTML = `<strong>工具: ${result.tool}</strong><br>` +
-                    `<pre>${JSON.stringify(result.result, null, 2)}</pre>`;
-                lastMessage.querySelector('.message-content').appendChild(resultDiv);
+        function renderStructuredData(data, depth = 0) {
+            if (data === null || data === undefined) {
+                return '<span class="json-null">null</span>';
             }
+            if (typeof data === 'string') {
+                if (data.includes('\n')) {
+                     return `<pre class="json-string">${escapeHtml(data)}</pre>`;
+                }
+                return `<span class="json-string">"${escapeHtml(data)}"</span>`;
+            }
+            if (typeof data === 'number') {
+                return `<span class="json-number">${data}</span>`;
+            }
+            if (typeof data === 'boolean') {
+                return `<span class="json-boolean">${data}</span>`;
+            }
+
+            if (Array.isArray(data)) {
+                if (data.length === 0) return '[]';
+                if (depth < 3 && data.length > 0 && typeof data[0] === 'object' && data[0] !== null && !Array.isArray(data[0])) {
+                    let html = '<table class="json-table">';
+                    const headers = Array.from(new Set(data.flatMap(obj => Object.keys(obj))));
+
+                    if (headers.length > 0) {
+                        html += '<thead><tr>';
+                        headers.forEach(header => html += `<th>${escapeHtml(header)}</th>`);
+                        html += '</tr></thead>';
+                    }
+
+                    html += '<tbody>';
+                    data.forEach(row => {
+                        html += '<tr>';
+                        headers.forEach(header => {
+                            html += `<td>${renderStructuredData(row[header], depth + 1)}</td>`;
+                        });
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table>';
+                    return html;
+                } else {
+                    let html = '<ul class="json-array">';
+                    data.forEach(item => {
+                        html += `<li>${renderStructuredData(item, depth + 1)}</li>`;
+                    });
+                    html += '</ul>';
+                    return html;
+                }
+            }
+
+            if (typeof data === 'object') {
+                if (Object.keys(data).length === 0) return '{}';
+                if (data.error && Object.keys(data).length === 1) {
+                    return `<div class="json-error-server">${escapeHtml(data.error)}</div>`
+                }
+
+                let html = '<dl class="json-object">';
+                for (const key in data) {
+                    if (data.hasOwnProperty(key)) {
+                        html += `<dt>${escapeHtml(key)}:</dt>`;
+                        html += `<dd>${renderStructuredData(data[key], depth + 1)}</dd>`;
+                    }
+                }
+                html += '</dl>';
+                return html;
+            }
+            return `<span class="json-fallback">${escapeHtml(String(data))}</span>`;
+        }
+
+
+        // Display tool results
+        // The 'result' parameter here is the 'result' field from the tool_results array in chatbot_app.py
+        // which is the direct output of an MCP tool.
+        function displayToolResult(toolCallResult) {
+            const container = document.getElementById('messagesContainer');
+            const lastMessage = container.lastElementChild; // Assumes the assistant message is the last one
+
+            if (!lastMessage || !lastMessage.classList.contains('assistant')) {
+                console.error("Could not find the last assistant message to append tool result to.");
+                return;
+            }
+
+            const messageContentDiv = lastMessage.querySelector('.message-content');
+            if (!messageContentDiv) {
+                 console.error("Could not find message-content div in the last assistant message.");
+                return;
+            }
+
+            const toolResultDiv = document.createElement('div');
+            toolResultDiv.className = 'tool-result';
+            toolResultDiv.innerHTML = `<strong>工具: ${escapeHtml(toolCallResult.tool)}</strong><br>`; // Display tool name
+
+            const resultData = toolCallResult.result; // This is the actual data from the tool
+
+            if (resultData && resultData.image) { // Plotly images are usually base64
+                const img = document.createElement('img');
+                img.src = resultData.image; // Assumes image is base64 data URL
+                img.className = 'visualization';
+                toolResultDiv.appendChild(img);
+            } else if (resultData && resultData.plot_json) { // Plotly JSON
+                const plotDivId = `plotly-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
+                const plotDiv = document.createElement('div');
+                plotDiv.id = plotDivId;
+                plotDiv.className = 'visualization';
+                toolResultDiv.appendChild(plotDiv);
+                try {
+                    const plotSpec = JSON.parse(resultData.plot_json);
+                    Plotly.newPlot(plotDivId, plotSpec.data, plotSpec.layout);
+                } catch (e) {
+                    console.error("Error parsing Plotly JSON:", e);
+                    plotDiv.innerHTML = `<pre>Plotly JSON 解析错误: ${escapeHtml(e.message)}</pre>`;
+                }
+            } else if (typeof resultData === 'object' && resultData !== null) {
+                 // Check if it's an error object from the tool itself (e.g. {"error": "message from server.py"})
+                if (resultData.error && Object.keys(resultData).length === 1) {
+                     toolResultDiv.innerHTML += `<div class="tool-error-message"><pre>${escapeHtml(resultData.error)}</pre></div>`;
+                } else {
+                     toolResultDiv.innerHTML += renderStructuredData(resultData);
+                }
+            } else if (typeof resultData === 'string') {
+                 // If the result is a simple string (e.g. an error message or simple info)
+                toolResultDiv.innerHTML += `<pre>${escapeHtml(resultData)}</pre>`;
+            } else {
+                // Fallback for other primitive types or if resultData is undefined/null unexpectedly
+                toolResultDiv.innerHTML += `<pre>${escapeHtml(JSON.stringify(resultData, null, 2))}</pre>`;
+            }
+            messageContentDiv.appendChild(toolResultDiv);
+            scrollToBottom(); // Ensure the new content is visible
         }
 
         // Message handling functions
@@ -402,9 +689,20 @@ let sessionId = null;
         async function exportChat() {
             try {
                 const response = await fetch(`/api/v1/history/${sessionId}`);
+
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        addSystemMessage('您的会话已过期，请刷新页面或点击<a href="#" onclick="reinitializeSession()">这里</a>重新开始。');
+                        disableAllInputs(); // Disable inputs as session is gone
+                        throw new Error('Session expired');
+                    }
+                    const errorData = await response.json().catch(() => ({ detail: '导出聊天记录时发生未知服务端错误。' }));
+                    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+                }
+
                 const parsedResponse = await response.json();
 
-                if (response.ok && parsedResponse.status === 'success' && parsedResponse.data) {
+                if (parsedResponse.status === 'success' && parsedResponse.data) {
                     const blob = new Blob([JSON.stringify(parsedResponse.data, null, 2)], { type: 'application/json' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -413,10 +711,12 @@ let sessionId = null;
                     a.click();
                     URL.revokeObjectURL(url);
                 } else {
-                    showError(parsedResponse.detail || '导出失败');
+                    showError(parsedResponse.message || parsedResponse.detail || '导出失败');
                 }
             } catch (error) {
-                showError('导出失败: ' + error.message);
+                 if (error.message !== 'Session expired') {
+                    showError('导出失败: ' + error.message);
+                }
             }
         }
 
