@@ -910,10 +910,31 @@ async def process_tool_calls(response: str, session: ChatSession) -> List[PyList
             
         except Exception as e:
             logger.error(f"Error processing tool call: {e}")
-            tool_results.append({
-                "tool": "error",
-                "error": str(e)
-            })
+            # Specific handling for JSONDecodeError
+            if isinstance(e, json.JSONDecodeError):
+                logger.error(
+                    "json_decode_error_processing_tool_call",
+                    tool_match_content=match.strip()[:500], # Log first 500 chars of what failed to parse
+                    error=str(e),
+                    exc_info=True # Include stack trace
+                )
+                tool_results.append({
+                    "tool": "error_parsing_tool_call_json",
+                    "error_message": f"Failed to parse JSON for tool call: {str(e)}",
+                    "raw_content_snippet": match.strip()[:200] # Shorter snippet for the actual result
+                })
+            else:
+                # General error handling
+                logger.error(
+                    "error_processing_tool_call",
+                    tool_name=tool_data.get("tool", "unknown_tool_due_to_earlier_error") if 'tool_data' in locals() else "unknown_tool_json_error",
+                    error=str(e),
+                    exc_info=True # Include stack trace
+                )
+                tool_results.append({
+                    "tool": tool_data.get("tool", "error") if 'tool_data' in locals() else "error_in_tool_processing",
+                    "error": str(e)
+                })
     
     return tool_results
 

@@ -11,6 +11,7 @@
 - 💬 **自然语言交互**: 通过对话方式进行数据分析
 - 📁 **文件支持**: 支持 CSV、Excel 格式数据文件
 - 🌐 **Web 界面**: 现代化的聊天式 Web 界面
+- 🛠️ **LLM 工具调用**: LLM 通过结构化的函数调用与后端数据分析工具交互，执行复杂任务。
 
 ## 快速开始
 
@@ -74,6 +75,8 @@ python -m src.web_app
    - 在左侧边栏选择不同的 AI 模型
    - 支持实时切换，保持对话上下文
 
+**重要提示**: 上传的数据和执行的分析是会话特定的，如果服务器重新启动则不会保留，因为数据当前存储在内存中。
+
 ## 项目结构
 
 ```
@@ -85,8 +88,12 @@ data_analysis/
 │   ├── llm_providers.py   # LLM 提供商实现
 │   ├── visualization.py   # 数据可视化工具
 │   └── statistical_tests.py # 统计检验工具
-├── templates/             # HTML 模板
-├── static/               # 静态文件
+├── templates/
+│   └── chatbot.html       # 聊天机器人界面 HTML
+├── static/
+│   ├── css/               # CSS 样式 (如果未来添加)
+│   └── js/
+│       └── chatbot_scripts.js # 聊天机器人界面的客户端 JavaScript
 ├── uploads/              # 上传文件目录
 ├── exports/              # 导出文件目录
 ├── .env.example          # 环境变量示例
@@ -95,7 +102,14 @@ data_analysis/
 └── README.md            # 本文件
 ```
 
+## 前端说明
+
+聊天机器人的主要客户端逻辑位于 `static/js/chatbot_scripts.js`。此文件处理用户交互、与后端 API 通信以及在浏览器中呈现聊天消息和数据可视化。
+
 ## 高级功能
+
+### LLM 工具调用 (Function Calling)
+本应用的一个核心特性是LLM能够调用后端定义好的数据分析工具。这是通过MCP (Model Context Protocol) 实现的，LLM会生成特定格式的指令来请求工具执行，并将结果用于后续的分析和回答。这使得LLM能够执行诸如文件上传处理、统计计算和图表生成等复杂操作。
 
 ### 统计检验工具
 
@@ -118,6 +132,8 @@ data_analysis/
 2. API 密钥需要有效且有足够的配额
 3. 大文件上传可能需要较长处理时间
 4. 建议定期导出重要的分析结果
+5. **数据持久性**: 上传的数据和执行的分析是会话特定的，如果服务器重新启动则不会保留，因为数据当前存储在内存中。 (Data uploaded and analyses performed are session-specific and are not persisted if the server restarts, as data is currently stored in memory.)
+6. **代码库状态**: 代码库最近进行了一些重构和改进，包括前端JavaScript的组织和LLM提供者逻辑的清理，以提高可维护性。
 
 ## 故障排除
 
