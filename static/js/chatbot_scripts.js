@@ -422,7 +422,8 @@ let sessionId = null;
                                         if (reader) reader.cancel().catch(e => console.error("Error cancelling reader:", e));
                                         return;
                                     } else {
-                                        addAssistantMessage(`流式响应错误: ${data.error}`);
+                                        // Use addSystemMessage for server-side stream errors to make them distinct
+                                        addSystemMessage(`服务器处理错误: ${data.error}`);
                                     }
                                 }
                             } catch (e) {
@@ -454,72 +455,176 @@ let sessionId = null;
                  .replace(/'/g, "&#039;");
         }
 
-        function renderStructuredData(data, depth = 0) {
+        // Function to trigger file download
+        function triggerDownload(content, filename, contentType) {
+            const blob = new Blob([content], { type: contentType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Export table data to CSV
+        function exportTableToCsv(data, filename = 'export.csv') {
+            if (!Array.isArray(data) || data.length === 0) {
+                console.warn('No data to export for CSV or data is not an array.');
+                addSystemMessage('无法导出 CSV：没有数据或数据格式不正确。');
+                return;
+            }
+             // Ensure all items in data are objects, for safety, though renderStructuredData implies this for tables
+            if (typeof data[0] !== 'object' || data[0] === null) {
+                console.warn('CSV export expects an array of objects.');
+                addSystemMessage('无法导出 CSV：数据格式不是对象数组。');
+                return;
+            }
+
+            const headers = Object.keys(data[0]);
+            let csvContent = headers.join(',') + '\n';
+
+            data.forEach(row => {
+                const values = headers.map(header => {
+                    let value = row[header];
+                    if (value === null || value === undefined) {
+                        value = '';
+                    } else if (typeof value === 'object') {
+                        value = JSON.stringify(value); // Stringify nested objects/arrays
+                    }
+                    const stringValue = String(value);
+                    if (stringValue.includes('"') || stringValue.includes(',')) {
+                        return `"${stringValue.replace(/"/g, '""')}"`;
+                    }
+                    return stringValue;
+                });
+                csvContent += values.join(',') + '\n';
+            });
+
+            triggerDownload(csvContent, filename, 'text/csv;charset=utf-8;');
+        }
+
+        // Export object data to JSON
+        function exportObjectToJson(data, filename = 'export.json') {
+            if (typeof data !== 'object' || data === null) {
+                console.warn('No data to export for JSON or data is not an object.');
+                addSystemMessage('无法导出 JSON：没有数据或数据格式不正确。');
+                return;
+            }
+            try {
+                const jsonContent = JSON.stringify(data, null, 2);
+                triggerDownload(jsonContent, filename, 'application/json;charset=utf-8;');
+            } catch (e) {
+                console.error('Error stringifying JSON for export:', e);
+                addSystemMessage(`无法导出 JSON: ${e.message}`);
+            }
+        }
+
+        function renderStructuredData(data, depth = 0, originalData = null) {
+            // originalData is used to pass the top-level data for export buttons
+            // If called externally, originalData should be the same as data for the initial call.
+            if (depth === 0 && originalData === null) {
+                originalData = data;
+            }
+
+            let contentHtml = ''; // Stores the HTML for the data itself
+
             if (data === null || data === undefined) {
-                return '<span class="json-null">null</span>';
-            }
-            if (typeof data === 'string') {
+                contentHtml = '<span class="json-null">null</span>';
+            } else if (typeof data === 'string') {
                 if (data.includes('\n')) {
-                     return `<pre class="json-string">${escapeHtml(data)}</pre>`;
-                }
-                return `<span class="json-string">"${escapeHtml(data)}"</span>`;
-            }
-            if (typeof data === 'number') {
-                return `<span class="json-number">${data}</span>`;
-            }
-            if (typeof data === 'boolean') {
-                return `<span class="json-boolean">${data}</span>`;
-            }
-
-            if (Array.isArray(data)) {
-                if (data.length === 0) return '[]';
-                if (depth < 3 && data.length > 0 && typeof data[0] === 'object' && data[0] !== null && !Array.isArray(data[0])) {
-                    let html = '<table class="json-table">';
-                    const headers = Array.from(new Set(data.flatMap(obj => Object.keys(obj))));
-
-                    if (headers.length > 0) {
-                        html += '<thead><tr>';
-                        headers.forEach(header => html += `<th>${escapeHtml(header)}</th>`);
-                        html += '</tr></thead>';
-                    }
-
-                    html += '<tbody>';
-                    data.forEach(row => {
-                        html += '<tr>';
-                        headers.forEach(header => {
-                            html += `<td>${renderStructuredData(row[header], depth + 1)}</td>`;
-                        });
-                        html += '</tr>';
-                    });
-                    html += '</tbody></table>';
-                    return html;
+                     contentHtml = `<pre class="json-string">${escapeHtml(data)}</pre>`;
                 } else {
-                    let html = '<ul class="json-array">';
-                    data.forEach(item => {
-                        html += `<li>${renderStructuredData(item, depth + 1)}</li>`;
-                    });
-                    html += '</ul>';
-                    return html;
+                    contentHtml = `<span class="json-string">"${escapeHtml(data)}"</span>`;
                 }
+            } else if (typeof data === 'number') {
+                contentHtml = `<span class="json-number">${data}</span>`;
+            } else if (typeof data === 'boolean') {
+                contentHtml = `<span class="json-boolean">${data}</span>`;
+            } else if (Array.isArray(data)) {
+                if (data.length === 0) {
+                    contentHtml = '[]';
+                } else if (depth === 0 && data.length > 0 && typeof data[0] === 'object' && data[0] !== null && !Array.isArray(data[0])) {
+                    // Table rendering (Array of Objects)
+                    let table = '<table class="json-table">';
+                    const headers = Array.from(new Set(data.flatMap(obj => Object.keys(obj))));
+                    if (headers.length > 0) {
+                        table += '<thead><tr>';
+                        headers.forEach(header => table += `<th>${escapeHtml(header)}</th>`);
+                        table += '</tr></thead>';
+                    }
+                    table += '<tbody>';
+                    data.forEach(row => {
+                        table += '<tr>';
+                        headers.forEach(header => {
+                            table += `<td>${renderStructuredData(row[header], depth + 1, row[header])}</td>`;
+                        });
+                        table += '</tr>';
+                    });
+                    table += '</tbody></table>';
+                    contentHtml = table;
+                } else { // Simple array rendering
+                    let list = '<ul class="json-array">';
+                    data.forEach(item => {
+                        list += `<li>${renderStructuredData(item, depth + 1, item)}</li>`;
+                    });
+                    list += '</ul>';
+                    contentHtml = list;
+                }
+            } else if (typeof data === 'object') {
+                if (Object.keys(data).length === 0) {
+                    contentHtml = '{}';
+                } else if (data.error && Object.keys(data).length === 1 && depth === 0) {
+                    // This is a specific error object like {"error": "message"}
+                    contentHtml = `<div class="json-error-server tool-error-message">${escapeHtml(data.error)}</div>`;
+                }
+                 else {
+                    let dl = '<dl class="json-object">';
+                    for (const key in data) {
+                        if (data.hasOwnProperty(key)) {
+                            dl += `<dt>${escapeHtml(key)}:</dt>`;
+                            dl += `<dd>${renderStructuredData(data[key], depth + 1, data[key])}</dd>`;
+                        }
+                    }
+                    dl += '</dl>';
+                    contentHtml = dl;
+                }
+            } else {
+                contentHtml = `<span class="json-fallback">${escapeHtml(String(data))}</span>`;
             }
 
-            if (typeof data === 'object') {
-                if (Object.keys(data).length === 0) return '{}';
-                if (data.error && Object.keys(data).length === 1) {
-                    return `<div class="json-error-server">${escapeHtml(data.error)}</div>`
-                }
+            // If at depth 0, wrap content and add export buttons
+            if (depth === 0) {
+                let wrapperDiv = document.createElement('div');
+                wrapperDiv.className = 'structured-data-wrapper';
+                wrapperDiv.innerHTML = contentHtml;
 
-                let html = '<dl class="json-object">';
-                for (const key in data) {
-                    if (data.hasOwnProperty(key)) {
-                        html += `<dt>${escapeHtml(key)}:</dt>`;
-                        html += `<dd>${renderStructuredData(data[key], depth + 1)}</dd>`;
+                // Add export buttons based on the type of originalData
+                if (Array.isArray(originalData) && originalData.length > 0 && typeof originalData[0] === 'object' && originalData[0] !== null && !Array.isArray(originalData[0])) {
+                    const exportCsvButton = document.createElement('button');
+                    exportCsvButton.textContent = '导出为 CSV';
+                    exportCsvButton.className = 'export-button export-csv-button btn btn-sm btn-outline-primary mt-2';
+                    exportCsvButton.onclick = function() {
+                        exportTableToCsv(originalData, `table_export_${Date.now()}.csv`);
+                    };
+                    wrapperDiv.appendChild(exportCsvButton);
+                } else if (typeof originalData === 'object' && originalData !== null && !Array.isArray(originalData)) {
+                    // Also add for error objects if they are the top-level data
+                     if (Object.keys(originalData).length > 0) { // Don't add for empty objects
+                        const exportJsonButton = document.createElement('button');
+                        exportJsonButton.textContent = '导出为 JSON';
+                        exportJsonButton.className = 'export-button export-json-button btn btn-sm btn-outline-secondary mt-2';
+                        exportJsonButton.onclick = function() {
+                            exportObjectToJson(originalData, `data_export_${Date.now()}.json`);
+                        };
+                        wrapperDiv.appendChild(exportJsonButton);
                     }
                 }
-                html += '</dl>';
-                return html;
+                return wrapperDiv.outerHTML;
             }
-            return `<span class="json-fallback">${escapeHtml(String(data))}</span>`;
+
+            return contentHtml; // For nested calls, return only the content HTML
         }
 
 
@@ -528,59 +633,82 @@ let sessionId = null;
         // which is the direct output of an MCP tool.
         function displayToolResult(toolCallResult) {
             const container = document.getElementById('messagesContainer');
-            const lastMessage = container.lastElementChild; // Assumes the assistant message is the last one
+            const lastMessage = container.lastElementChild;
 
             if (!lastMessage || !lastMessage.classList.contains('assistant')) {
                 console.error("Could not find the last assistant message to append tool result to.");
+                addSystemMessage(`工具 ${escapeHtml(toolCallResult.tool)} 执行结果: ${escapeHtml(JSON.stringify(toolCallResult.result))}`);
                 return;
             }
 
             const messageContentDiv = lastMessage.querySelector('.message-content');
             if (!messageContentDiv) {
-                 console.error("Could not find message-content div in the last assistant message.");
+                console.error("Could not find message-content div in the last assistant message.");
+                lastMessage.innerHTML += `<div class="tool-result"><strong>工具: ${escapeHtml(toolCallResult.tool)}</strong><br><pre>${escapeHtml(JSON.stringify(toolCallResult.result))}</pre></div>`;
                 return;
             }
 
             const toolResultDiv = document.createElement('div');
             toolResultDiv.className = 'tool-result';
-            toolResultDiv.innerHTML = `<strong>工具: ${escapeHtml(toolCallResult.tool)}</strong><br>`; // Display tool name
+            toolResultDiv.innerHTML = `<div class="tool-name"><strong>工具: ${escapeHtml(toolCallResult.tool)}</strong></div>`;
 
-            const resultData = toolCallResult.result; // This is the actual data from the tool
+            const resultData = toolCallResult.result;
 
-            if (resultData && resultData.image) { // Plotly images are usually base64
-                const img = document.createElement('img');
-                img.src = resultData.image; // Assumes image is base64 data URL
-                img.className = 'visualization';
-                toolResultDiv.appendChild(img);
-            } else if (resultData && resultData.plot_json) { // Plotly JSON
-                const plotDivId = `plotly-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
-                const plotDiv = document.createElement('div');
-                plotDiv.id = plotDivId;
-                plotDiv.className = 'visualization';
-                toolResultDiv.appendChild(plotDiv);
-                try {
-                    const plotSpec = JSON.parse(resultData.plot_json);
-                    Plotly.newPlot(plotDivId, plotSpec.data, plotSpec.layout);
-                } catch (e) {
-                    console.error("Error parsing Plotly JSON:", e);
-                    plotDiv.innerHTML = `<pre>Plotly JSON 解析错误: ${escapeHtml(e.message)}</pre>`;
-                }
+            if (typeof resultData === 'string') {
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'tool-output-string';
+                contentDiv.innerHTML = `<pre>${escapeHtml(resultData)}</pre>`;
+                toolResultDiv.appendChild(contentDiv);
             } else if (typeof resultData === 'object' && resultData !== null) {
-                 // Check if it's an error object from the tool itself (e.g. {"error": "message from server.py"})
-                if (resultData.error && Object.keys(resultData).length === 1) {
-                     toolResultDiv.innerHTML += `<div class="tool-error-message"><pre>${escapeHtml(resultData.error)}</pre></div>`;
+                if (resultData.error) {
+                    const errorDisplay = document.createElement('div');
+                    errorDisplay.className = 'tool-error-message';
+                    errorDisplay.innerHTML = `<strong>工具错误:</strong> <pre>${escapeHtml(resultData.error)}</pre>`;
+                     // Add export button for the error object itself
+                    const exportErrorButton = document.createElement('button');
+                    exportErrorButton.textContent = '导出错误详情 (JSON)';
+                    exportErrorButton.className = 'export-button export-json-button btn btn-sm btn-outline-danger mt-1';
+                    exportErrorButton.onclick = function() {
+                        exportObjectToJson(resultData, `error_report_${toolCallResult.tool}_${Date.now()}.json`);
+                    };
+                    errorDisplay.appendChild(exportErrorButton);
+                    toolResultDiv.appendChild(errorDisplay);
+                } else if (resultData.image) {
+                    const img = document.createElement('img');
+                    img.src = resultData.image;
+                    img.className = 'visualization';
+                    toolResultDiv.appendChild(img);
+                } else if (resultData.plot_json) {
+                    const plotDivId = `plotly-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
+                    const plotDiv = document.createElement('div');
+                    plotDiv.id = plotDivId;
+                    plotDiv.className = 'visualization plotly-plot';
+                    toolResultDiv.appendChild(plotDiv);
+                    try {
+                        const plotSpec = JSON.parse(resultData.plot_json);
+                        Plotly.newPlot(plotDivId, plotSpec.data, plotSpec.layout, {responsive: true});
+                    } catch (e) {
+                        console.error("Error parsing Plotly JSON:", e);
+                        plotDiv.innerHTML = `<div class="tool-error-message">Plotly JSON 解析错误: <pre>${escapeHtml(e.message)}</pre></div>`;
+                    }
                 } else {
-                     toolResultDiv.innerHTML += renderStructuredData(resultData);
+                    // For general structured data, renderStructuredData returns HTML string including buttons
+                    toolResultDiv.innerHTML += renderStructuredData(resultData, 0, resultData);
                 }
-            } else if (typeof resultData === 'string') {
-                 // If the result is a simple string (e.g. an error message or simple info)
-                toolResultDiv.innerHTML += `<pre>${escapeHtml(resultData)}</pre>`;
+            } else if (resultData === null || resultData === undefined) {
+                const nullInfo = document.createElement('div');
+                nullInfo.className = 'tool-output-null';
+                nullInfo.textContent = '工具没有返回任何内容。';
+                toolResultDiv.appendChild(nullInfo);
             } else {
-                // Fallback for other primitive types or if resultData is undefined/null unexpectedly
-                toolResultDiv.innerHTML += `<pre>${escapeHtml(JSON.stringify(resultData, null, 2))}</pre>`;
+                const fallbackDiv = document.createElement('div');
+                fallbackDiv.className = 'tool-output-fallback';
+                fallbackDiv.innerHTML = `<pre>${escapeHtml(JSON.stringify(resultData, null, 2))}</pre>`;
+                toolResultDiv.appendChild(fallbackDiv);
             }
+
             messageContentDiv.appendChild(toolResultDiv);
-            scrollToBottom(); // Ensure the new content is visible
+            scrollToBottom();
         }
 
         // Message handling functions
